@@ -542,6 +542,26 @@ class CloudConnection {
     final epoch = ++_epoch;
     await ensureReady();
     if (roomId == null) throw StateError('Pair your home phone first.');
+    // Left alone, WebRTC plays a call as a phone call: the communication
+    // stream, with the call volume curve and voice filtering, which sounds thin
+    // and quiet through the loudspeaker. A web page plays the same stream as
+    // ordinary media, which is why the web listener sounded better. A room
+    // monitor is not a phone call, so play it as media. This has to be set
+    // before the first connection is created, because the audio track's usage
+    // is fixed when the audio device is created.
+    if (Platform.isAndroid) {
+      try {
+        await WebRTC.initialize(
+          options: {
+            'androidAudioConfiguration': AndroidAudioConfiguration.media
+                .toMap(),
+            'audioOutputSampleRate': 48000,
+          },
+        );
+      } catch (_) {
+        // Fall back to the default route rather than refuse to listen.
+      }
+    }
     final data = await api('/rooms/$roomId/sessions', {});
     final ice = await api('/rooms/$roomId/ice', {});
     if (epoch != _epoch || _closed) return;
