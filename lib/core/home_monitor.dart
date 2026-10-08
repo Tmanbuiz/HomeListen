@@ -179,6 +179,7 @@ class HomeMonitor extends ChangeNotifier {
       prefs: prefs!,
       home: _deviceRole == DeviceRole.home,
       onPcm: _processPcm,
+      onLevel: _onCloudLevel,
       onAlert: _onRemoteAlert,
       onProblem: (reason) {
         _error = reason;
@@ -1158,6 +1159,16 @@ class HomeMonitor extends ChangeNotifier {
       _lastUiUpdate = now;
       _notify();
     }
+  }
+
+  /// Draws the listening phone's sound wave from the loudness WebRTC reports.
+  /// The square root makes a quiet room visible and a loud one not all
+  /// clipped at the top.
+  void _onCloudLevel(double level) {
+    if (_disposed) return;
+    _levels.removeAt(0);
+    _levels.add((math.sqrt(level.clamp(0.0, 1.0)) * 1.4).clamp(0.03, 1.0));
+    _notify();
   }
 
   bool _reduceHiss = true;

@@ -43,6 +43,7 @@ class CloudConnection {
     required this.onProblem,
     required this.onPcm,
     required this.onAlert,
+    this.onLevel,
   });
   final String origin;
   final SharedPreferences prefs;
@@ -50,6 +51,12 @@ class CloudConnection {
   final void Function() onChanged;
   final void Function(String) onProblem;
   final void Function(Int16List) onPcm;
+
+  /// Loudness of the sound arriving from the home phone, 0 to 1, about seven
+  /// times a second. A listener never has the sound samples (WebRTC plays them
+  /// straight to the speaker), so this is what its sound wave is drawn from.
+  final void Function(double level)? onLevel;
+  Timer? _levelTimer;
   final void Function(Map<String, dynamic>) onAlert;
   static const _pcm = EventChannel('com.wiantribe.home_listen/webrtc_pcm');
   static const _native = MethodChannel('com.wiantribe.home_listen/mic_service');
@@ -593,6 +600,7 @@ class CloudConnection {
       return;
     }
     _away = peer;
+    _startLevels(peer);
     peer.pc.onTrack = (event) {
       event.track.enabled = true;
       event.track.enabled = _volume > 0;
@@ -708,7 +716,35 @@ class CloudConnection {
     }
   }
 
+  /// Reads the received sound level from WebRTC's statistics.
+  void _startLevels(_CloudPeer peer) {
+    _levelTimer?.cancel();
+    if (onLevel == null) return;
+    var reading = false;
+    _levelTimer = Timer.periodic(const Duration(milliseconds: 150), (_) async {
+      if (reading || _closed || peer.closed) return;
+      reading = true;
+      try {
+        for (final report in await peer.pc.getStats()) {
+          if (report.type != 'inbound-rtp') continue;
+          final kind = report.values['kind'] ?? report.values['mediaType'];
+          if (kind != 'audio') continue;
+          final raw = report.values['audioLevel'];
+          final level = raw is num ? raw.toDouble() : double.tryParse('$raw');
+          if (level != null) onLevel!(level);
+          break;
+        }
+      } catch (_) {
+        // A missed reading is a flat bar for 150 ms, nothing more.
+      } finally {
+        reading = false;
+      }
+    });
+  }
+
   Future<void> stopAway({bool disableAlerts = true}) async {
+    _levelTimer?.cancel();
+    _levelTimer = null;
     _epoch++;
     final peer = _away;
     _away = null;
