@@ -96,7 +96,9 @@ class CloudConnection {
       });
   Future<void> _initialize() async {
     if (!Platform.isAndroid) {
-      throw StateError('Cloud mode uses the Android app or the iPhone Home Screen web app. Choose Tailscale for native iOS.');
+      throw StateError(
+        'Cloud mode uses the Android app or the iPhone Home Screen web app. Choose Tailscale for native iOS.',
+      );
     }
     final response = await _client
         .get(Uri.parse('$origin/api/config'))
@@ -400,7 +402,9 @@ class CloudConnection {
       List<RTCIceCandidate> pending,
       RTCIceCandidate candidate,
     ) async {
-      if (epoch != _epoch || _closed || candidate.candidate?.isNotEmpty != true) {
+      if (epoch != _epoch ||
+          _closed ||
+          candidate.candidate?.isNotEmpty != true) {
         return;
       }
       try {
@@ -548,6 +552,11 @@ class CloudConnection {
       event.track.enabled = true;
       event.track.enabled = _volume > 0;
       unawaited(Helper.setVolume(_volume, event.track));
+      // WebRTC puts a call into communication mode, and Android then sends it
+      // to a connected Bluetooth headset (at call volume) or to the quiet
+      // earpiece. Nothing here chose an output, so a listener could hear
+      // nothing at all. Use the phone speaker, as a room monitor should.
+      unawaited(_useSpeaker());
       peer!.remoteTrack = event.track;
     };
     await peer.pc.addTransceiver(
@@ -565,6 +574,15 @@ class CloudConnection {
     });
     peer.renewIce = () => _refreshPeer(peer!);
     onChanged();
+  }
+
+  /// Plays the incoming audio through the phone's loudspeaker.
+  Future<void> _useSpeaker() async {
+    try {
+      await Helper.setSpeakerphoneOn(true);
+    } catch (_) {
+      // Not every platform exposes routing; the default route still plays.
+    }
   }
 
   Future<void> enableAlerts() async {
