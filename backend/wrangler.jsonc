@@ -5,6 +5,7 @@
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
+  "routes": [{ "pattern": "homelisten.wiantribe.com", "custom_domain": true }],
   "assets": {
     "directory": "../viewer/dist",
     "binding": "ASSETS",
@@ -20,7 +21,7 @@
     "FIREBASE_MESSAGING_SENDER_ID": "551000593925",
     "VAPID_PUBLIC_KEY": "BMNHcsPZ07q2dj5lHSoIy0azYWbNeoypBEcxo1fhObuG13LQGMO51cKGMsiGf_IZaA_159Fpr3wInZbc-KwKllA",
     "VAPID_SUBJECT": "https://github.com/Tmanbuiz/HomeListen",
-    "PUBLIC_ORIGIN": "https://homelisten.atoyejet.workers.dev",
+    "PUBLIC_ORIGIN": "https://homelisten.wiantribe.com",
     "ALLOW_TURN": "false",
   }
 }
