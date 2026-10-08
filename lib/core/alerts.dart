@@ -22,12 +22,18 @@ class MonitorAlerts {
       _initialized = true;
     }
     if (Platform.isAndroid) {
-      await _plugin.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
-          ?.createNotificationChannel(const AndroidNotificationChannel(
-            'sound_watch', 'Sound Watch',
-            description: 'Sound events from your paired home phone.',
-            importance: Importance.high,
-          ));
+      await _plugin
+          .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin
+          >()
+          ?.createNotificationChannel(
+            const AndroidNotificationChannel(
+              'sound_watch',
+              'Sound Watch',
+              description: 'Sound events from your paired home phone.',
+              importance: Importance.high,
+            ),
+          );
       return await _plugin
               .resolvePlatformSpecificImplementation<
                 AndroidFlutterLocalNotificationsPlugin

@@ -8,6 +8,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -378,6 +379,16 @@ class CloudConnection {
     onChanged();
   }
 
+  /// Appends "-anchor" to every occurrence of each track id in [sdp].
+  @visibleForTesting
+  static String renameAnchorTracks(String sdp, Iterable<String> ids) {
+    var out = sdp;
+    for (final id in ids) {
+      out = out.replaceAll(id, '$id-anchor');
+    }
+    return out;
+  }
+
   Future<void> _startCaptureAnchor(MediaStream stream, int epoch) async {
     // Native WebRTC can suspend capture without a sending audio channel.
     // This muted, local-only peer pair holds that channel for alerts-only use.
@@ -427,7 +438,21 @@ class CloudConnection {
     }
     final offer = await sender.createOffer();
     await sender.setLocalDescription(offer);
-    await receiver.setRemoteDescription(offer);
+    // The plugin finds a track by id and looks at LOCAL tracks first. The
+    // anchor's receiver would see the microphone track's own id, so the
+    // enabled = false and volume 0 above landed on the real microphone track
+    // and every viewer heard silence while capture itself kept running. Give
+    // the anchor's copy a different id so those calls only silence its own
+    // playback.
+    await receiver.setRemoteDescription(
+      RTCSessionDescription(
+        renameAnchorTracks(offer.sdp ?? '', [
+          for (final t in stream.getAudioTracks())
+            if (t.id != null) t.id!,
+        ]),
+        offer.type,
+      ),
+    );
     for (final c in toReceiver) {
       await receiver.addCandidate(c);
     }
