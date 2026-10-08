@@ -1,0 +1,62 @@
+# Cloud iOS build — this file is why the project does not need a Mac.
+#
+# Codemagic runs the workflow on its own macOS machine; you push from Windows
+# and an unsigned .ipa comes back, which you sign yourself with AltStore or
+# Sideloadly using a free Apple ID (re-sign every 7 days).
+
+definitions:
+  env_versions: &env_versions
+    flutter: stable
+    # Pinned rather than `latest`, which Codemagic moves whenever Apple ships
+    # a new Xcode, so a build that passed last week can fail untouched.
+    xcode: 26.6
+    cocoapods: default
+
+workflows:
+  ios-unsigned:
+    name: iOS unsigned .ipa (sideload with a free Apple ID)
+    max_build_duration: 45
+    instance_type: mac_mini_m2
+    environment:
+      <<: *env_versions
+    scripts:
+      - name: Fetch verified sound model
+        script: python3 tool/fetch_sound_model.py
+      - name: Install dependencies
+        script: flutter pub get
+      - name: Static analysis
+        script: flutter analyze
+      - name: Unit tests
+        script: flutter test
+      - name: Build unsigned .app
+        script: flutter build ios --release --no-codesign
+      - name: Wrap it as an .ipa
+        # `flutter build ipa` refuses without signing; an .ipa is just a zip
+        # with the .app inside Payload/.
+        script: |
+          set -e
+          mkdir -p build/ios/ipa/Payload
+          cp -r build/ios/iphoneos/Runner.app build/ios/ipa/Payload/
+          cd build/ios/ipa
+          zip -r -q home-listen-unsigned.ipa Payload
+          rm -rf Payload
+    artifacts:
+      - build/ios/ipa/*.ipa
+  android-preview:
+    name: Android preview APK
+    max_build_duration: 45
+    environment:
+      flutter: stable
+    scripts:
+      - name: Fetch verified sound model
+        script: python3 tool/fetch_sound_model.py
+      - name: Install dependencies
+        script: flutter pub get
+      - name: Static analysis
+        script: flutter analyze
+      - name: Unit and interface tests
+        script: flutter test
+      - name: Build Android APKs
+        script: flutter build apk --release --split-per-abi
+    artifacts:
+      - build/app/outputs/flutter-apk/*.apk

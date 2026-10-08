@@ -1,0 +1,26 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "homelisten",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "assets": {
+    "directory": "../viewer/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "triggers": { "crons": ["*/15 * * * *"] },
+  "vars": {
+    "FIREBASE_PROJECT_ID": "",
+    "FIREBASE_API_KEY": "",
+    "FIREBASE_WEB_APP_ID": "",
+    "FIREBASE_ANDROID_APP_ID": "",
+    "FIREBASE_MESSAGING_SENDER_ID": "",
+    "VAPID_PUBLIC_KEY": "",
+    "VAPID_SUBJECT": "https://github.com/Tmanbuiz/HomeListen",
+    "PUBLIC_ORIGIN": "",
+    "ALLOW_TURN": "false",
+  }
+}

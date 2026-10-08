@@ -1,0 +1,16 @@
+{
+  "name": "homelisten-cloud",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "test": "node --test",
+    "check": "node --check src/worker.js && node --check src/store.js && node --check src/security.js"
+  },
+  "dependencies": { "web-push": "3.6.7" },
+  "devDependencies": { "wrangler": "4.148.0" }
+}

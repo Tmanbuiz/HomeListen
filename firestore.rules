@@ -1,0 +1,60 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function room(id) { return get(/databases/$(database)/documents/rooms/$(id)).data; }
+    function member(id) {
+      return signedIn() && (room(id).ownerUid == request.auth.uid ||
+        room(id).members.get(request.auth.uid, false) == true);
+    }
+    function session(id, sid) {
+      return get(/databases/$(database)/documents/rooms/$(id)/sessions/$(sid)).data;
+    }
+    function participant(id, sid) {
+      let data = session(id, sid);
+      return member(id) && !data.ended && request.time < data.expiresAt &&
+        room(id).sharing && data.generation == room(id).generation &&
+        room(id).activeSessions.get(data.viewerUid, '') == sid &&
+        (data.ownerUid == request.auth.uid || data.viewerUid == request.auth.uid);
+    }
+    function validSdp(value) { return value is string && value.size() <= 65536 && value.size() > 0; }
+    match /rooms/{id} {
+      allow get: if member(id);
+      allow list, create, update, delete: if false;
+      match /sessions/{sid} {
+        allow get: if member(id) && (resource.data.ownerUid == request.auth.uid ||
+          resource.data.viewerUid == request.auth.uid);
+        allow list: if false;
+        allow create, delete: if false;
+        allow update: if participant(id, sid) && (
+          (request.auth.uid == resource.data.viewerUid &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['offer']) &&
+            resource.data.offer == null && validSdp(request.resource.data.offer)) ||
+          (request.auth.uid == resource.data.ownerUid &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['answer']) &&
+            resource.data.answer == null && validSdp(request.resource.data.answer)) ||
+          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ended']) &&
+            request.resource.data.ended == true)
+        );
+        match /candidates/{cid} {
+          allow read: if participant(id, sid);
+          allow create: if participant(id, sid) &&
+            request.resource.data.keys().hasOnly(['candidate', 'sdpMid', 'sdpMLineIndex', 'side', 'expiresAt']) &&
+            request.resource.data.keys().hasAll(['candidate', 'sdpMid', 'sdpMLineIndex', 'side', 'expiresAt']) &&
+            request.resource.data.candidate is string && request.resource.data.candidate.size() <= 4096 &&
+            (request.resource.data.sdpMid == null ||
+              (request.resource.data.sdpMid is string && request.resource.data.sdpMid.size() <= 64)) &&
+            (request.resource.data.sdpMLineIndex == null ||
+              (request.resource.data.sdpMLineIndex is int && request.resource.data.sdpMLineIndex >= 0 &&
+                request.resource.data.sdpMLineIndex <= 8)) &&
+            request.resource.data.expiresAt == session(id, sid).expiresAt &&
+            ((request.resource.data.side == 'home' && session(id, sid).ownerUid == request.auth.uid) ||
+              (request.resource.data.side == 'away' && session(id, sid).viewerUid == request.auth.uid));
+          allow update, delete: if false;
+        }
+      }
+      match /{privatePath=**} { allow read, write: if false; }
+    }
+    match /{document=**} { allow read, write: if false; }
+  }
+}

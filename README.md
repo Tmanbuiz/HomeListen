@@ -102,4 +102,3 @@ Battery restrictions, force-stop, internet loss or denied notifications can inte
 Actions APKs use preview/debug signing. Configure your own release key for stable updates/distribution. Never commit service-account JSON, VAPID private keys, TURN keys or signing keys.
 
 YAMNet provenance/license are in [assets/models](assets/models). The download helper verifies the model checksum.
-

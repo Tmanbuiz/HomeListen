@@ -1,0 +1,61 @@
+name: Build and check Home Listen
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  cloud:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            backend/package-lock.json
+            viewer/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm ci
+      - run: npm ci
+        working-directory: backend
+      - run: npm ci
+        working-directory: viewer
+      - run: npm run check && npm test
+        working-directory: backend
+      - run: npm run check && npm test && npm run build
+        working-directory: viewer
+      - run: npm run test:rules
+      - run: npm run build
+        working-directory: backend
+        env:
+          WRANGLER_SEND_METRICS: false
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.6
+          cache: true
+      - run: python3 tool/fetch_sound_model.py
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - run: flutter build apk --release --split-per-abi
+      - run: ./gradlew :app:testDebugUnitTest
+        working-directory: android
+      - uses: actions/upload-artifact@v4
+        with:
+          name: homelisten-android-apks
+          path: build/app/outputs/flutter-apk/*.apk
