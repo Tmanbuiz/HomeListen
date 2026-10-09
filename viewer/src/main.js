@@ -90,12 +90,12 @@ async function pair(value) {
   } catch (error) {
     // The link is fine; the home also wants a code from an authenticator app.
     if (error.code === "totp_required" || error.code === "totp_invalid") {
-      el("totp-field").hidden = false; el("totp-code").focus();
+      el("totp-code").focus();
       throw new Error(error.code === "totp_invalid" ? "That code was not accepted. Enter the newest one." : "Enter the 6-digit code from your authenticator app.");
     }
     throw error;
   }
-  el("pair-code").value = ""; el("totp-code").value = ""; el("totp-field").hidden = true;
+  el("pair-code").value = ""; el("totp-code").value = "";
   await watchRoom(invite.roomId);
   event("Paired with your home phone");
 }

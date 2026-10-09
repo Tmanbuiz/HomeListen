@@ -27,8 +27,8 @@
       <form id="pair-form">
         <label for="pair-code">Pairing link</label>
         <textarea id="pair-code" rows="3" placeholder="Paste the link from your home phone" autocomplete="off" autocapitalize="off" spellcheck="false" required></textarea>
-        <div id="totp-field" hidden>
-          <label for="totp-code">Authenticator code</label>
+        <div id="totp-field">
+          <label for="totp-code">Authenticator code <span class="fine">(only if your home asks for one)</span></label>
           <input id="totp-code" inputmode="numeric" pattern="[0-9 ]*" maxlength="7" autocomplete="one-time-code" placeholder="123456">
         </div>
         <button id="pair-button" type="submit">Pair this phone <span aria-hidden="true">↗</span></button>
