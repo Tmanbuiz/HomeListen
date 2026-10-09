@@ -18,6 +18,14 @@ Future<void> main() async {
   if (!prefs.containsKey('connection_mode')) {
     await prefs.setString('connection_mode', 'cloud');
   }
+  // The server moved from homelisten.wiantribe.com; carry phones across so
+  // nobody has to retype the address. Pairing is tied to the Firebase account,
+  // not the address, so it survives the move.
+  final saved = prefs.getString('cloud_server');
+  if (saved != null &&
+      Uri.tryParse(saved)?.host == 'homelisten.wiantribe.com') {
+    await prefs.setString('cloud_server', 'https://homelisten.oralyvo.app');
+  }
   final monitor = HomeMonitor(prefs: prefs);
   await monitor.initialize();
   runApp(HomeListenApp(prefs: prefs, monitor: monitor));
