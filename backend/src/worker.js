@@ -1,10 +1,16 @@
 import webpush from "web-push";
 import { HttpError, authenticate, constantTimeEqual, digest, publicConfig, randomId, requireId, serviceToken } from "./security.js";
 import { FirestoreStore } from "./store.js";
+import { base32Decode, newSecret, otpauthUri, verifyTotp } from "./totp.js";
 
 const LEASE_MS = 120_000;
 const INVITE_MS = 10 * 60_000;
 const SESSION_MS = 2 * 60 * 60_000;
+// Wrong authenticator codes allowed before a room pauses guessing, and how
+// long it pauses. Six digits is only a million guesses, so this is what stops
+// someone holding a leaked invitation from simply trying them all.
+const TOTP_MAX_FAILURES = 5;
+const TOTP_LOCK_MS = 10 * 60_000;
 const titles = {
   crying: "Possible crying",
   barking: "Possible barking",
@@ -55,6 +61,46 @@ function roomName(value) {
     throw new HttpError(400, "Use a room name of 1 to 32 characters.");
   }
   return value.trim();
+}
+
+/**
+ * Accepts [code] against a room's authenticator secret, or throws.
+ *
+ * A missing code is not a failure (the client simply has not asked yet), but a
+ * wrong one counts toward the lock. A good code is spent: it cannot be used
+ * again, and two requests racing with the same code cannot both win because
+ * the update is compare-and-swap.
+ */
+async function spendTotp(store, id, doc, code, nowMs) {
+  const data = doc.data;
+  if ((data.lockedUntilMs ?? 0) > nowMs) {
+    throw new HttpError(429, "Too many wrong codes. Wait a few minutes and try again.", "totp_locked");
+  }
+  const clean = typeof code === "string" ? code.replace(/\s+/g, "") : "";
+  if (!clean) {
+    throw new HttpError(403, "Enter the 6-digit code from your authenticator app.", "totp_required");
+  }
+  const counter = await verifyTotp(base32Decode(data.secret), clean, nowMs, data.lastCounter ?? -1);
+  const path = "roomTotp/" + id;
+  if (counter == null) {
+    const failures = (data.failures ?? 0) + 1;
+    const locked = failures >= TOTP_MAX_FAILURES;
+    try {
+      await store.put(path, {
+        ...data, failures: locked ? 0 : failures, lockedUntilMs: locked ? nowMs + TOTP_LOCK_MS : 0
+      }, doc.version);
+    } catch (error) { if (error.status !== 409) throw error; }
+    throw new HttpError(403, locked
+      ? "Too many wrong codes. Wait a few minutes and try again."
+      : "That code is not right. Check the code in your authenticator app.",
+    locked ? "totp_locked" : "totp_invalid");
+  }
+  try {
+    await store.put(path, { ...data, lastCounter: counter, failures: 0, lockedUntilMs: 0 }, doc.version);
+  } catch (error) {
+    if (error.status !== 409) throw error;
+    throw new HttpError(403, "That code was already used. Wait for the next one.", "totp_invalid");
+  }
 }
 
 async function readRoom(store, id, uid, ownerOnly = false) {
@@ -247,6 +293,12 @@ export function createWorker(overrides = {}) {
           !constantTimeEqual(invite.data.secretHash, hashed)) {
         throw new HttpError(403, "This pairing code has expired. Show a new code on the home phone.");
       }
+      // With authenticator protection on, a valid invitation is not enough: the
+      // person joining must also give the current code from the owner's
+      // authenticator app. The invitation is checked first, so the code cannot
+      // be guessed without one.
+      const totp = await store.get("roomTotp/" + id);
+      if (totp?.data.enabled) await spendTotp(store, id, totp, input.code, now());
       // The invitation authorizes this first membership; an authenticated token
       // alone does not. Use compare-and-swap so parallel joins cannot exceed five.
       for (let attempt = 0; attempt < 5; attempt++) {
@@ -266,7 +318,8 @@ export function createWorker(overrides = {}) {
       }
     }
 
-    const ownerOnly = ["invite", "state", "revoke", "alerts"].includes(action);
+    const ownerOnly = ["invite", "state", "revoke", "alerts", "totp-start", "totp-confirm", "totp-off"]
+      .includes(action);
     const room = await readRoom(store, id, uid, ownerOnly);
 
     if (action === "" && request.method === "GET") return json({ roomId: id, room: room.data });
@@ -277,6 +330,37 @@ export function createWorker(overrides = {}) {
         secretHash: await digest(secret), generation: room.data.generation, expiresAt
       });
       return json({ roomId: id, secret, expiresAt, generation: room.data.generation });
+    }
+    if (action === "totp-start" && request.method === "POST") {
+      const existing = await store.get("roomTotp/" + id);
+      if (existing?.data.enabled) {
+        throw new HttpError(409, "Authenticator protection is already on. Turn it off first to set it up again.");
+      }
+      const secret = newSecret();
+      // Not active yet: it only starts to apply once the owner proves the app
+      // shows matching codes (totp-confirm), so a typo cannot lock them out.
+      await store.put("roomTotp/" + id, { secret, enabled: false, lastCounter: -1, failures: 0, lockedUntilMs: 0 });
+      return json({ secret, uri: otpauthUri(secret, room.data.roomName) });
+    }
+    if (action === "totp-confirm" && request.method === "POST") {
+      const input = await body(request);
+      const doc = await store.get("roomTotp/" + id);
+      if (!doc) throw new HttpError(409, "Start authenticator setup first.");
+      if (doc.data.enabled) return json({ enabled: true });
+      await spendTotp(store, id, doc, input.code, now());
+      const fresh = await store.get("roomTotp/" + id);
+      await store.put("roomTotp/" + id, { ...fresh.data, enabled: true }, fresh.version);
+      await mutateRoom(store, id, uid, true, (data) => ({ ...data, totp: true }));
+      return json({ enabled: true });
+    }
+    if (action === "totp-off" && request.method === "POST") {
+      const input = await body(request);
+      const doc = await store.get("roomTotp/" + id);
+      if (!doc?.data.enabled) return json({ enabled: false });
+      await spendTotp(store, id, doc, input.code, now());
+      await store.delete("roomTotp/" + id);
+      await mutateRoom(store, id, uid, true, (data) => ({ ...data, totp: false }));
+      return json({ enabled: false });
     }
     if (action === "revoke" && request.method === "POST") {
       await mutateRoom(store, id, uid, true, (data) => ({
@@ -408,8 +492,10 @@ export function createWorker(overrides = {}) {
         else if (env.ASSETS) response = await env.ASSETS.fetch(request);
         else response = new Response("Build the Home Listen web viewer before deploying.", { status: 503 });
       } catch (error) {
-        response = json({ error: error instanceof HttpError ? error.message : "The cloud server could not complete this request." },
-          error instanceof HttpError ? error.status : 500);
+        response = json({
+          error: error instanceof HttpError ? error.message : "The cloud server could not complete this request.",
+          ...(error instanceof HttpError && error.code ? { code: error.code } : {})
+        }, error instanceof HttpError ? error.status : 500);
       }
       response = new Response(response.body, response);
       response.headers.set("x-content-type-options", "nosniff");

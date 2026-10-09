@@ -9,6 +9,7 @@ This new repository builds on the owner's [PhoneListen](https://github.com/Tmanb
 - Android home app with a local **Start sharing** button, visible microphone notification and **Stop** action.
 - Encrypted WebRTC live audio, anonymous Firebase identity and private Firestore signaling.
 - QR/link invitations expiring after 10 minutes, up to five paired listening phones, and revocation at home.
+- Optional authenticator code to join: with it on, a pairing link alone is not enough. A new phone must also give a 6-digit code from Google/Microsoft Authenticator or Authy. Codes are single-use, and five wrong codes lock joining for 10 minutes. Turn it on in Devices on the home phone; turning it off needs a code too.
 - Local detection of possible crying, barking, knocking and loud sounds. Only alert text reaches the backend; no audio recordings are saved.
 - Android FCM and iPhone Home Screen Web Push, including alerts without a live audio connection.
 - Cloudflare Worker API and web listener on one HTTPS address.

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createWorker, validateSubscription } from "../src/worker.js";
 import { HttpError } from "../src/security.js";
+import { base32Decode, counterAt, hotp } from "../src/totp.js";
 
 class MemoryStore {
   docs = new Map(); counter = 0;
@@ -61,7 +62,7 @@ function setup() {
     return { id, secret: invite.body.secret };
   }
   const join = (id, secret, uid = "away") => api("/rooms/" + id + "/join", uid, { secret });
-  return { store, api, home, join, pushes, advance: (ms) => time += ms };
+  return { store, api, home, join, pushes, advance: (ms) => time += ms, now: () => time };
 }
 
 test("anonymous identity alone cannot read, join, or operate another home", async () => {
@@ -159,4 +160,129 @@ test("web push cannot target private addresses or misleading Apple hostnames", (
   }
   assert.equal(validateSubscription({ endpoint: "https://web.push.apple.com/Q", keys }).endpoint,
     "https://web.push.apple.com/Q");
+});
+
+// --- Authenticator (TOTP) protection --------------------------------------
+async function codeNow(s, secret, stepsAhead = 0) {
+  return hotp(base32Decode(secret), counterAt(s.now()) + stepsAhead);
+}
+async function protectedHome(s) {
+  const { id } = await s.home();
+  const started = await s.api("/rooms/" + id + "/totp-start");
+  const code = await codeNow(s, started.body.secret);
+  const confirmed = await s.api("/rooms/" + id + "/totp-confirm", "home", { code });
+  return { id, secret: started.body.secret, started, confirmed };
+}
+const freshInvite = async (s, id) => (await s.api("/rooms/" + id + "/invite")).body.secret;
+
+test("authenticator setup returns a secret and an address for the app, to the owner only", async () => {
+  const s = setup(); const { id, secret } = await s.home(); await s.join(id, secret);
+  const started = await s.api("/rooms/" + id + "/totp-start");
+  assert.equal(started.status, 200);
+  assert.match(started.body.secret, /^[A-Z2-7]{32}$/);
+  assert.ok(started.body.uri.startsWith("otpauth://totp/Home%20Listen%3ABedroom?secret="));
+  assert.equal((await s.api("/rooms/" + id + "/totp-start", "away")).status, 403);
+  assert.equal((await s.api("/rooms/" + id + "/totp-start", "stranger")).status, 404);
+});
+
+test("protection is not active until the owner proves the app shows matching codes", async () => {
+  const s = setup(); const { id } = await s.home();
+  await s.api("/rooms/" + id + "/totp-start");
+  const invite = await freshInvite(s, id);
+  assert.equal((await s.join(id, invite)).status, 200);
+  assert.notEqual((await s.store.get("rooms/" + id)).data.totp, true);
+  const wrong = await s.api("/rooms/" + id + "/totp-confirm", "home", { code: "000000" });
+  assert.equal(wrong.status, 403);
+  assert.notEqual((await s.store.get("rooms/" + id)).data.totp, true);
+});
+
+test("once on, a valid invitation alone no longer joins", async () => {
+  const s = setup(); const { id, confirmed } = await protectedHome(s);
+  assert.equal(confirmed.status, 200);
+  assert.equal((await s.store.get("rooms/" + id)).data.totp, true);
+  s.advance(31000);
+  const invite = await freshInvite(s, id);
+  const missing = await s.join(id, invite);
+  assert.equal(missing.status, 403);
+  assert.equal(missing.body.code, "totp_required");
+  const wrong = await s.api("/rooms/" + id + "/join", "away", { secret: invite, code: "123456" });
+  assert.equal(wrong.status, 403);
+  assert.equal(wrong.body.code, "totp_invalid");
+  assert.equal(Object.keys((await s.store.get("rooms/" + id)).data.members).length, 0);
+});
+
+test("the right current code joins, and spaces typed in the code are ignored", async () => {
+  const s = setup(); const { id, secret } = await protectedHome(s);
+  s.advance(31000);
+  const invite = await freshInvite(s, id);
+  const code = await codeNow(s, secret);
+  const joined = await s.api("/rooms/" + id + "/join", "away", { secret: invite, code: code.slice(0, 3) + " " + code.slice(3) });
+  assert.equal(joined.status, 200);
+  assert.equal((await s.store.get("rooms/" + id)).data.members.away, true);
+});
+
+test("a code can be used once, and the next one works", async () => {
+  const s = setup(); const { id, secret } = await protectedHome(s);
+  s.advance(31000);
+  const invite = await freshInvite(s, id);
+  const code = await codeNow(s, secret);
+  assert.equal((await s.api("/rooms/" + id + "/join", "away", { secret: invite, code })).status, 200);
+  const replay = await s.api("/rooms/" + id + "/join", "second", { secret: invite, code });
+  assert.equal(replay.status, 403);
+  assert.equal(replay.body.code, "totp_invalid");
+  s.advance(30000);
+  const next = await codeNow(s, secret);
+  assert.equal((await s.api("/rooms/" + id + "/join", "second", { secret: invite, code: next })).status, 200);
+});
+
+test("repeated wrong codes lock guessing, even for the right code, until the lock passes", async () => {
+  const s = setup(); const { id, secret } = await protectedHome(s);
+  s.advance(31000);
+  const invite = await freshInvite(s, id);
+  for (let i = 0; i < 4; i++) {
+    assert.equal((await s.api("/rooms/" + id + "/join", "away", { secret: invite, code: "000000" })).body.code, "totp_invalid");
+  }
+  const fifth = await s.api("/rooms/" + id + "/join", "away", { secret: invite, code: "000000" });
+  assert.equal(fifth.status, 403);
+  assert.equal(fifth.body.code, "totp_locked");
+  const locked = await s.api("/rooms/" + id + "/join", "away", { secret: invite, code: await codeNow(s, secret) });
+  assert.equal(locked.status, 429);
+  s.advance(10 * 60000 + 1000);
+  const again = await freshInvite(s, id);
+  assert.equal((await s.api("/rooms/" + id + "/join", "away", { secret: again, code: await codeNow(s, secret) })).status, 200);
+});
+
+test("the invitation is checked before the code, so codes cannot be guessed without one", async () => {
+  const s = setup(); const { id } = await protectedHome(s);
+  const bad = await s.api("/rooms/" + id + "/join", "away", { secret: "A".repeat(43), code: "123456" });
+  assert.equal(bad.status, 403);
+  assert.equal(bad.body.code, undefined);
+  const doc = await s.store.get("roomTotp/" + id);
+  assert.equal(doc.data.failures, 0);
+});
+
+test("the secret never appears in the room or the invitation", async () => {
+  const s = setup(); const { id, secret } = await protectedHome(s);
+  assert.ok(!JSON.stringify((await s.store.get("rooms/" + id)).data).includes(secret));
+  assert.ok(!JSON.stringify((await s.store.get("roomInvites/" + id)).data).includes(secret));
+});
+
+test("turning protection off needs a code, then joining needs none", async () => {
+  const s = setup(); const { id, secret } = await protectedHome(s);
+  assert.equal((await s.api("/rooms/" + id + "/totp-off", "home", {})).body.code, "totp_required");
+  s.advance(31000);
+  const joined = await s.api("/rooms/" + id + "/join", "away", { secret: await freshInvite(s, id), code: await codeNow(s, secret) });
+  assert.equal(joined.status, 200);
+  s.advance(30000);
+  assert.equal((await s.api("/rooms/" + id + "/totp-off", "away", { code: await codeNow(s, secret) })).status, 403);
+  const off = await s.api("/rooms/" + id + "/totp-off", "home", { code: await codeNow(s, secret) });
+  assert.equal(off.status, 200);
+  assert.equal((await s.store.get("rooms/" + id)).data.totp, false);
+  assert.equal(await s.store.get("roomTotp/" + id), null);
+  assert.equal((await s.join(id, await freshInvite(s, id))).status, 200);
+});
+
+test("setup cannot be restarted while on, which would swap the secret under the owner", async () => {
+  const s = setup(); const { id } = await protectedHome(s);
+  assert.equal((await s.api("/rooms/" + id + "/totp-start")).status, 409);
 });

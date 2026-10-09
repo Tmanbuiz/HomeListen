@@ -456,7 +456,14 @@ class HomeMonitor extends ChangeNotifier {
     _notify();
   }
 
-  Future<bool> pair(String code) async {
+  /// Set while a join is waiting for an authenticator code. The page shows a
+  /// prompt, then calls [pair] again with the same invitation and the code.
+  String? authenticatorPrompt;
+
+  bool get authenticatorOn => _cloud?.authenticatorOn ?? false;
+
+  Future<bool> pair(String code, {String? authCode}) async {
+    authenticatorPrompt = null;
     final invite = CloudPairing.parse(code);
     if (invite != null) {
       try {
@@ -466,11 +473,22 @@ class HomeMonitor extends ChangeNotifier {
         }
         _connectionMode = ConnectionMode.cloud;
         await prefs?.setString('connection_mode', 'cloud');
-        await _cloudConnection().join(invite);
+        await _cloudConnection().join(invite, code: authCode);
         _suppressAuto = false;
         _error = null;
         _notify();
         return true;
+      } on CloudApiException catch (e) {
+        if (e.code == 'totp_required' || e.code == 'totp_invalid') {
+          // Not an error to show: the invitation is fine, the code is next.
+          authenticatorPrompt = e.code == 'totp_invalid'
+              ? 'That code was not accepted. Enter the newest one.'
+              : 'Enter the 6-digit code from your authenticator app.';
+        } else {
+          _error = e.message;
+        }
+        _notify();
+        return false;
       } catch (e) {
         _error = _readableError(e);
         _notify();
@@ -499,6 +517,38 @@ class HomeMonitor extends ChangeNotifier {
       _error = 'Pairing could not be saved securely. Please try again.';
       _notify();
       return false;
+    }
+  }
+
+  /// Authenticator setup on the home phone. Each returns null on success, or a
+  /// sentence for the person on failure, so the dialog can show it in place.
+  Future<({String secret, String uri})?> startAuthenticator() async {
+    try {
+      return await _cloudConnection().startAuthenticator();
+    } catch (e) {
+      _error = _readableError(e);
+      _notify();
+      return null;
+    }
+  }
+
+  Future<String?> confirmAuthenticator(String code) async {
+    try {
+      await _cloudConnection().confirmAuthenticator(code);
+      _notify();
+      return null;
+    } catch (e) {
+      return _readableError(e);
+    }
+  }
+
+  Future<String?> disableAuthenticator(String code) async {
+    try {
+      await _cloudConnection().disableAuthenticator(code);
+      _notify();
+      return null;
+    } catch (e) {
+      return _readableError(e);
     }
   }
 

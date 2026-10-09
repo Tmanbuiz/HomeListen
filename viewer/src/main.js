@@ -35,7 +35,7 @@ async function api(path, data = undefined, method = "POST") {
     ...(data === undefined ? {} : { body: JSON.stringify(data) })
   });
   const result = await response.json();
-  if (!response.ok) throw new Error(result.error ?? "Home Listen could not complete this request.");
+  if (!response.ok) throw Object.assign(new Error(result.error ?? "Home Listen could not complete this request."), { code: result.code });
   return result;
 }
 function sharing() { return room?.sharing === true && Date.now() - room.lastSeenMs < 120_000; }
@@ -84,8 +84,18 @@ function revoke() {
 async function pair(value) {
   const invite = parsePairing(value, location.origin);
   if (!invite) throw new Error("Use a Home Listen pairing link from this server.");
-  await api("/rooms/" + invite.roomId + "/join", { secret: invite.secret });
-  el("pair-code").value = "";
+  const code = el("totp-code").value.replace(/s+/g, "");
+  try {
+    await api("/rooms/" + invite.roomId + "/join", { secret: invite.secret, ...(code ? { code } : {}) });
+  } catch (error) {
+    // The link is fine; the home also wants a code from an authenticator app.
+    if (error.code === "totp_required" || error.code === "totp_invalid") {
+      el("totp-field").hidden = false; el("totp-code").focus();
+      throw new Error(error.code === "totp_invalid" ? "That code was not accepted. Enter the newest one." : "Enter the 6-digit code from your authenticator app.");
+    }
+    throw error;
+  }
+  el("pair-code").value = ""; el("totp-code").value = ""; el("totp-field").hidden = true;
   await watchRoom(invite.roomId);
   event("Paired with your home phone");
 }

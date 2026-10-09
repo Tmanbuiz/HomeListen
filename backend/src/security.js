@@ -3,9 +3,12 @@ const keys = new Map();
 const oauth = new Map();
 
 export class HttpError extends Error {
-  constructor(status, message) {
+  // [code] is a short machine-readable reason (for example "totp_required")
+  // that clients use to decide what to ask the person, instead of matching text.
+  constructor(status, message, code = undefined) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 

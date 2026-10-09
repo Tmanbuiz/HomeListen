@@ -27,6 +27,10 @@
       <form id="pair-form">
         <label for="pair-code">Pairing link</label>
         <textarea id="pair-code" rows="3" placeholder="Paste the link from your home phone" autocomplete="off" autocapitalize="off" spellcheck="false" required></textarea>
+        <div id="totp-field" hidden>
+          <label for="totp-code">Authenticator code</label>
+          <input id="totp-code" inputmode="numeric" pattern="[0-9 ]*" maxlength="7" autocomplete="one-time-code" placeholder="123456">
+        </div>
         <button id="pair-button" type="submit">Pair this phone <span aria-hidden="true">↗</span></button>
       </form>
       <p class="fine">Pairing links expire after 10 minutes. Only people with a link can pair.</p>

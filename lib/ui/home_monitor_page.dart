@@ -746,6 +746,59 @@ class _Devices extends StatelessWidget {
             icon: const Icon(Icons.link_off),
             label: const Text('Revoke previous pairing codes'),
           ),
+          if (monitor.cloudMode) ...[
+            const SizedBox(height: 12),
+            SurfaceCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.verified_user_outlined),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          monitor.authenticatorOn
+                              ? 'Authenticator code is required to join'
+                              : 'Authenticator code to join',
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    monitor.authenticatorOn
+                        ? 'A new listening phone needs the pairing code and a 6-digit code from your authenticator app.'
+                        : 'Ask for a 6-digit code from an authenticator app when a new phone pairs, so a leaked pairing link alone cannot get in.',
+                  ),
+                  const SizedBox(height: 8),
+                  OutlinedButton(
+                    onPressed: () async {
+                      if (!monitor.authenticatorOn) {
+                        await _setUpAuthenticator(context, monitor);
+                        return;
+                      }
+                      final code = await _askCode(
+                        context,
+                        'Enter a current code to turn this off.',
+                      );
+                      if (code == null) return;
+                      final error = await monitor.disableAuthenticator(code);
+                      if (error != null && context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text(error)),
+                        );
+                      }
+                    },
+                    child: Text(
+                      monitor.authenticatorOn ? 'Turn off' : 'Set up',
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ] else ...[
           if (monitor.hasPairing)
             SurfaceCard(
@@ -1223,16 +1276,154 @@ Future<void> _accept(
   HomeMonitor monitor,
   String code,
 ) async {
-  final ok = await monitor.pair(code);
-  if (!ok && context.mounted) {
+  String? authCode;
+  while (true) {
+    final ok = await monitor.pair(code, authCode: authCode);
+    if (ok) return;
+    final prompt = monitor.authenticatorPrompt;
+    if (prompt == null || !context.mounted) break;
+    authCode = await _askCode(context, prompt);
+    if (authCode == null) return;
+  }
+  if (context.mounted) {
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
+      SnackBar(
         content: Text(
-          'That code could not be paired. Use the code shown on your home phone.',
+          monitor.error ??
+              'That code could not be paired. Use the code shown on your home phone.',
         ),
       ),
     );
   }
+}
+
+/// Asks for the 6-digit code an authenticator app is showing. Null if cancelled.
+Future<String?> _askCode(BuildContext context, String message) async {
+  final controller = TextEditingController();
+  final result = await showDialog<String>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Authenticator code'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(message),
+          const SizedBox(height: 12),
+          TextField(
+            controller: controller,
+            autofocus: true,
+            keyboardType: TextInputType.number,
+            maxLength: 6,
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            decoration: const InputDecoration(hintText: '123456'),
+            onSubmitted: (value) => Navigator.pop(context, value),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(context, controller.text),
+          child: const Text('Continue'),
+        ),
+      ],
+    ),
+  );
+  controller.dispose();
+  return result == null || result.length != 6 ? null : result;
+}
+
+/// Turning the authenticator on: shows the QR code and key for the app, then
+/// asks for one code from it, so protection is never enabled with a secret the
+/// owner failed to save.
+Future<void> _setUpAuthenticator(
+  BuildContext context,
+  HomeMonitor monitor,
+) async {
+  final setup = await monitor.startAuthenticator();
+  if (setup == null || !context.mounted) return;
+  final controller = TextEditingController();
+  String? problem;
+  var busy = false;
+  await showDialog<void>(
+    context: context,
+    barrierDismissible: false,
+    builder: (context) => StatefulBuilder(
+      builder: (context, setState) => AlertDialog(
+        title: const Text('Set up authenticator'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Scan this with Google Authenticator, Microsoft Authenticator or Authy. Then type the 6-digit code it shows.',
+              ),
+              const SizedBox(height: 12),
+              Container(
+                color: Colors.white,
+                padding: const EdgeInsets.all(12),
+                child: QrImageView(data: setup.uri, size: 180),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Or enter this key by hand:',
+                style: TextStyle(fontSize: 12),
+              ),
+              SelectableText(
+                setup.secret,
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: controller,
+                keyboardType: TextInputType.number,
+                maxLength: 6,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                decoration: InputDecoration(
+                  hintText: '123456',
+                  errorText: problem,
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: busy ? null : () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: busy
+                ? null
+                : () async {
+                    setState(() {
+                      busy = true;
+                      problem = null;
+                    });
+                    final error = await monitor.confirmAuthenticator(
+                      controller.text,
+                    );
+                    if (!context.mounted) return;
+                    if (error == null) {
+                      Navigator.pop(context);
+                    } else {
+                      setState(() {
+                        busy = false;
+                        problem = error;
+                      });
+                    }
+                  },
+            child: const Text('Turn on'),
+          ),
+        ],
+      ),
+    ),
+  );
+  controller.dispose();
 }
 
 Future<void> _volumeSheet(

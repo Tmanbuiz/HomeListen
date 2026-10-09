@@ -15,6 +15,16 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'cloud_pairing.dart';
 
+/// A refusal from the server. [code] says why when the app can act on it, e.g.
+/// `totp_required` means the authenticator code has to be asked for.
+class CloudApiException implements Exception {
+  CloudApiException(this.message, [this.code]);
+  final String message;
+  final String? code;
+  @override
+  String toString() => message;
+}
+
 @pragma('vm:entry-point')
 Future<void> homeListenBackgroundMessage(RemoteMessage message) async {
   // FCM displays the notification payload. No microphone or audio starts here.
@@ -190,7 +200,10 @@ class CloudConnection {
     );
     final result = jsonDecode(response.body) as Map<String, dynamic>;
     if (response.statusCode >= 400) {
-      throw StateError(result['error'] ?? 'Cloud connection failed.');
+      throw CloudApiException(
+        (result['error'] as String?) ?? 'Cloud connection failed.',
+        result['code'] as String?,
+      );
     }
     return result;
   }
@@ -216,17 +229,39 @@ class CloudConnection {
     return inviteCode!;
   }
 
-  Future<void> join(CloudPairing invite) async {
+  Future<void> join(CloudPairing invite, {String? code}) async {
     if (invite.origin != origin) {
       throw StateError('Use a pairing link from your configured cloud server.');
     }
     final result = await api('/rooms/${invite.roomId}/join', {
       'secret': invite.secret,
+      'code': ?code,
     });
     roomId = invite.roomId;
     room = Map<String, dynamic>.from(result['room'] as Map);
     await prefs.setString('cloud_paired_room', roomId!);
     _watchRoom();
+  }
+
+  /// Whether joining this home needs a code from an authenticator app.
+  bool get authenticatorOn => room?['totp'] == true;
+
+  /// Starts setup: the secret and the otpauth address for the QR code. Nothing
+  /// is enforced until [confirmAuthenticator] sees a matching code.
+  Future<({String secret, String uri})> startAuthenticator() async {
+    if (roomId == null) await createHome();
+    final result = await api('/rooms/$roomId/totp-start', {});
+    return (secret: result['secret'] as String, uri: result['uri'] as String);
+  }
+
+  Future<void> confirmAuthenticator(String code) async {
+    await api('/rooms/$roomId/totp-confirm', {'code': code});
+    room = {...?room, 'totp': true};
+  }
+
+  Future<void> disableAuthenticator(String code) async {
+    await api('/rooms/$roomId/totp-off', {'code': code});
+    room = {...?room, 'totp': false};
   }
 
   void _watchRoom() {
