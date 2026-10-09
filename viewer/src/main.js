@@ -84,7 +84,7 @@ function revoke() {
 async function pair(value) {
   const invite = parsePairing(value, location.origin);
   if (!invite) throw new Error("Use a Home Listen pairing link from this server.");
-  const code = el("totp-code").value.replace(/s+/g, "");
+  const code = el("totp-code").value.replace(/\s+/g, "");
   try {
     await api("/rooms/" + invite.roomId + "/join", { secret: invite.secret, ...(code ? { code } : {}) });
   } catch (error) {
