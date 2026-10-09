@@ -227,3 +227,18 @@ try {
   el("pair-button").disabled = !auth?.currentUser;
   message(error.message ?? "Set up Firebase and the cloud server before pairing.", true);
 }
+
+// Pair as soon as both the link and a full 6-digit code are in, whichever was
+// entered last. A code typed before the link waits and asks for the link.
+function tryAutoPair() {
+  const code = el("totp-code").value.replace(/\D/g, "");
+  if (code.length !== 6 || el("pair-button").disabled) return;
+  if (!el("pair-code").value.trim()) {
+    message("Now paste the pairing link from your home phone.", true);
+    el("pair-code").focus();
+    return;
+  }
+  el("pair-form").requestSubmit();
+}
+el("totp-code").addEventListener("input", tryAutoPair);
+el("pair-code").addEventListener("input", () => { if (el("totp-code").value.replace(/\D/g, "").length === 6) tryAutoPair(); });
