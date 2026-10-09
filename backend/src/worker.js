@@ -103,6 +103,36 @@ async function spendTotp(store, id, doc, code, nowMs) {
   }
 }
 
+/** Lower-cased, trimmed, single-spaced, so "  Rex the DOG " matches "rex the dog". */
+function normalizeAnswer(value) {
+  if (typeof value !== "string") return "";
+  return value.normalize("NFKC").toLowerCase().trim().split(/\s+/).join(" ");
+}
+const answerKey = (answer) => digest("home-listen-answer:" + normalizeAnswer(answer));
+
+/**
+ * Adds [uid] as a listener. The caller has already proved the right to join
+ * (a valid invitation, or the secret answer plus an authenticator code).
+ * Compare-and-swap keeps parallel joins from exceeding five phones.
+ */
+async function addMember(store, id, uid, generation = null) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const room = await store.get("rooms/" + id);
+    if (!room || (generation !== null && room.data.generation !== generation)) {
+      throw new HttpError(403, "This pairing code was revoked.");
+    }
+    if (room.data.ownerUid === uid) throw new HttpError(400, "Use a different phone to listen.");
+    if (!room.data.members[uid] && Object.keys(room.data.members).length >= 5) {
+      throw new HttpError(409, "Five listening phones are already paired. Revoke a phone at home first.");
+    }
+    const data = { ...room.data, members: { ...room.data.members, [uid]: true } };
+    try {
+      await store.put("rooms/" + id, data, room.version);
+      return data;
+    } catch (error) { if (error.status !== 409 || attempt === 4) throw error; }
+  }
+}
+
 async function readRoom(store, id, uid, ownerOnly = false) {
   const room = await store.get("rooms/" + id);
   if (!room || !(room.data.ownerUid === uid || room.data.members?.[uid] === true)) {
@@ -277,6 +307,21 @@ export function createWorker(overrides = {}) {
       }
       return json({ roomId: id, room }, 201);
     }
+    if (path === "/api/join-code" && request.method === "POST") {
+      // The way in without a link: the secret answer finds the home, and a
+      // current authenticator code proves it is really the owner's.
+      const input = await body(request);
+      const refused = () => new HttpError(403, "That answer or code is not right.", "totp_invalid");
+      if (!normalizeAnswer(input.answer)) throw refused();
+      const index = await store.get("answerIndex/" + await answerKey(input.answer));
+      if (!index) throw refused();
+      const roomId = index.data.roomId;
+      const totp = await store.get("roomTotp/" + roomId);
+      if (!totp?.data.enabled) throw refused();
+      await spendTotp(store, roomId, totp, input.code, now());
+      const data = await addMember(store, roomId, uid);
+      return json({ roomId, room: data });
+    }
     const match = /^\/api\/rooms\/([A-Za-z0-9_-]+)(?:\/([a-z-]+))?$/.exec(path);
     if (!match) throw new HttpError(404, "This endpoint does not exist.");
     const id = requireId(match[1]);
@@ -293,29 +338,10 @@ export function createWorker(overrides = {}) {
           !constantTimeEqual(invite.data.secretHash, hashed)) {
         throw new HttpError(403, "This pairing code has expired. Show a new code on the home phone.");
       }
-      // With authenticator protection on, a valid invitation is not enough: the
-      // person joining must also give the current code from the owner's
-      // authenticator app. The invitation is checked first, so the code cannot
-      // be guessed without one.
-      const totp = await store.get("roomTotp/" + id);
-      if (totp?.data.enabled) await spendTotp(store, id, totp, input.code, now());
-      // The invitation authorizes this first membership; an authenticated token
-      // alone does not. Use compare-and-swap so parallel joins cannot exceed five.
-      for (let attempt = 0; attempt < 5; attempt++) {
-        const room = await store.get("rooms/" + id);
-        if (!room || room.data.generation !== invite.data.generation) {
-          throw new HttpError(403, "This pairing code was revoked.");
-        }
-        if (room.data.ownerUid === uid) throw new HttpError(400, "Use a different phone to listen.");
-        if (!room.data.members[uid] && Object.keys(room.data.members).length >= 5) {
-          throw new HttpError(409, "Five listening phones are already paired. Revoke a phone at home first.");
-        }
-        const data = { ...room.data, members: { ...room.data.members, [uid]: true } };
-        try {
-          await store.put("rooms/" + id, data, room.version);
-          return json({ roomId: id, room: data });
-        } catch (error) { if (error.status !== 409 || attempt === 4) throw error; }
-      }
+      // A valid invitation authorizes this first membership; an authenticated
+      // token alone does not.
+      const data = await addMember(store, id, uid, invite.data.generation);
+      return json({ roomId: id, room: data });
     }
 
     const ownerOnly = ["invite", "state", "revoke", "alerts", "totp-start", "totp-confirm", "totp-off"]
@@ -336,10 +362,25 @@ export function createWorker(overrides = {}) {
       if (existing?.data.enabled) {
         throw new HttpError(409, "Authenticator protection is already on. Turn it off first to set it up again.");
       }
+      const input = await body(request);
+      const question = typeof input.question === "string" ? input.question.trim() : "";
+      if (question.length < 3 || question.length > 80) {
+        throw new HttpError(400, "Write a secret question of 3 to 80 characters.");
+      }
+      if (normalizeAnswer(input.answer).length < 3 || String(input.answer).length > 80) {
+        throw new HttpError(400, "Use a secret answer of 3 to 80 characters.");
+      }
+      const answerHash = await answerKey(input.answer);
+      const taken = await store.get("answerIndex/" + answerHash);
+      if (taken && taken.data.roomId !== id) {
+        throw new HttpError(409, "Choose a different secret answer.");
+      }
       const secret = newSecret();
       // Not active yet: it only starts to apply once the owner proves the app
       // shows matching codes (totp-confirm), so a typo cannot lock them out.
-      await store.put("roomTotp/" + id, { secret, enabled: false, lastCounter: -1, failures: 0, lockedUntilMs: 0 });
+      await store.put("roomTotp/" + id, {
+        secret, question, answerHash, enabled: false, lastCounter: -1, failures: 0, lockedUntilMs: 0
+      });
       return json({ secret, uri: otpauthUri(secret, room.data.roomName) });
     }
     if (action === "totp-confirm" && request.method === "POST") {
@@ -349,6 +390,13 @@ export function createWorker(overrides = {}) {
       if (doc.data.enabled) return json({ enabled: true });
       await spendTotp(store, id, doc, input.code, now());
       const fresh = await store.get("roomTotp/" + id);
+      try {
+        await store.put("answerIndex/" + fresh.data.answerHash, { roomId: id }, null);
+      } catch (error) {
+        if (error.status !== 409) throw error;
+        const holder = await store.get("answerIndex/" + fresh.data.answerHash);
+        if (holder?.data.roomId !== id) throw new HttpError(409, "Choose a different secret answer.");
+      }
       await store.put("roomTotp/" + id, { ...fresh.data, enabled: true }, fresh.version);
       await mutateRoom(store, id, uid, true, (data) => ({ ...data, totp: true }));
       return json({ enabled: true });
@@ -358,6 +406,7 @@ export function createWorker(overrides = {}) {
       const doc = await store.get("roomTotp/" + id);
       if (!doc?.data.enabled) return json({ enabled: false });
       await spendTotp(store, id, doc, input.code, now());
+      await store.delete("answerIndex/" + doc.data.answerHash);
       await store.delete("roomTotp/" + id);
       await mutateRoom(store, id, uid, true, (data) => ({ ...data, totp: false }));
       return json({ enabled: false });

@@ -229,13 +229,12 @@ class CloudConnection {
     return inviteCode!;
   }
 
-  Future<void> join(CloudPairing invite, {String? code}) async {
+  Future<void> join(CloudPairing invite) async {
     if (invite.origin != origin) {
       throw StateError('Use a pairing link from your configured cloud server.');
     }
     final result = await api('/rooms/${invite.roomId}/join', {
       'secret': invite.secret,
-      'code': ?code,
     });
     roomId = invite.roomId;
     room = Map<String, dynamic>.from(result['room'] as Map);
@@ -243,14 +242,30 @@ class CloudConnection {
     _watchRoom();
   }
 
-  /// Whether joining this home needs a code from an authenticator app.
+  /// Joins without a link: the secret answer finds the home and the code from
+  /// the owner's authenticator app proves it.
+  Future<void> joinWithCode(String answer, String code) async {
+    final result = await api('/join-code', {'answer': answer, 'code': code});
+    roomId = result['roomId'] as String;
+    room = Map<String, dynamic>.from(result['room'] as Map);
+    await prefs.setString('cloud_paired_room', roomId!);
+    _watchRoom();
+  }
+
+  /// Whether this home has an authenticator code as a second way in.
   bool get authenticatorOn => room?['totp'] == true;
 
   /// Starts setup: the secret and the otpauth address for the QR code. Nothing
   /// is enforced until [confirmAuthenticator] sees a matching code.
-  Future<({String secret, String uri})> startAuthenticator() async {
+  Future<({String secret, String uri})> startAuthenticator(
+    String question,
+    String answer,
+  ) async {
     if (roomId == null) await createHome();
-    final result = await api('/rooms/$roomId/totp-start', {});
+    final result = await api('/rooms/$roomId/totp-start', {
+      'question': question,
+      'answer': answer,
+    });
     return (secret: result['secret'] as String, uri: result['uri'] as String);
   }
 

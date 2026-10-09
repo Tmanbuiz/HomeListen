@@ -27,13 +27,19 @@
       <form id="pair-form">
         <label for="pair-code">Pairing link</label>
         <textarea id="pair-code" rows="3" placeholder="Paste the link from your home phone" autocomplete="off" autocapitalize="off" spellcheck="false" required></textarea>
-        <div id="totp-field">
-          <label for="totp-code">Authenticator code <span class="fine">(only if your home asks for one)</span></label>
-          <input id="totp-code" inputmode="numeric" pattern="[0-9 ]*" maxlength="7" autocomplete="one-time-code" placeholder="123456">
-        </div>
         <button id="pair-button" type="submit">Pair this phone <span aria-hidden="true">↗</span></button>
       </form>
       <p class="fine">Pairing links expire after 10 minutes. Only people with a link can pair.</p>
+      <div class="divider"></div>
+      <h3>No link? Use your secret answer</h3>
+      <p>If you turned on the authenticator code at home, enter its secret answer and the 6-digit code. It joins as soon as the code is complete.</p>
+      <form id="code-form">
+        <label for="answer">Secret answer</label>
+        <input id="answer" class="field" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="80">
+        <label for="totp-code">Authenticator code</label>
+        <input id="totp-code" class="field" inputmode="numeric" pattern="[0-9 ]*" maxlength="7" autocomplete="one-time-code" placeholder="123456">
+        <button id="code-button" type="submit">Join with code <span aria-hidden="true">↗</span></button>
+      </form>
     </section>
     <section id="home-panel" class="card monitor" hidden>
       <div class="room-heading"><div><p class="eyebrow">PAIRED HOME PHONE</p><h2 id="room-name">Your room</h2></div><span id="sharing-status" class="pill">Checking sharing…</span></div>

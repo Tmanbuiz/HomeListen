@@ -456,14 +456,28 @@ class HomeMonitor extends ChangeNotifier {
     _notify();
   }
 
-  /// Set while a join is waiting for an authenticator code. The page shows a
-  /// prompt, then calls [pair] again with the same invitation and the code.
-  String? authenticatorPrompt;
-
   bool get authenticatorOn => _cloud?.authenticatorOn ?? false;
 
-  Future<bool> pair(String code, {String? authCode}) async {
-    authenticatorPrompt = null;
+  /// The other way in: the home's secret answer and a current authenticator
+  /// code, with no pairing link.
+  Future<bool> pairWithCode(String answer, String code) async {
+    try {
+      if (isActive || _busy) await stop();
+      _connectionMode = ConnectionMode.cloud;
+      await prefs?.setString('connection_mode', 'cloud');
+      await _cloudConnection().joinWithCode(answer, code);
+      _suppressAuto = false;
+      _error = null;
+      _notify();
+      return true;
+    } catch (e) {
+      _error = _readableError(e);
+      _notify();
+      return false;
+    }
+  }
+
+  Future<bool> pair(String code) async {
     final invite = CloudPairing.parse(code);
     if (invite != null) {
       try {
@@ -473,22 +487,11 @@ class HomeMonitor extends ChangeNotifier {
         }
         _connectionMode = ConnectionMode.cloud;
         await prefs?.setString('connection_mode', 'cloud');
-        await _cloudConnection().join(invite, code: authCode);
+        await _cloudConnection().join(invite);
         _suppressAuto = false;
         _error = null;
         _notify();
         return true;
-      } on CloudApiException catch (e) {
-        if (e.code == 'totp_required' || e.code == 'totp_invalid') {
-          // Not an error to show: the invitation is fine, the code is next.
-          authenticatorPrompt = e.code == 'totp_invalid'
-              ? 'That code was not accepted. Enter the newest one.'
-              : 'Enter the 6-digit code from your authenticator app.';
-        } else {
-          _error = e.message;
-        }
-        _notify();
-        return false;
       } catch (e) {
         _error = _readableError(e);
         _notify();
@@ -522,9 +525,12 @@ class HomeMonitor extends ChangeNotifier {
 
   /// Authenticator setup on the home phone. Each returns null on success, or a
   /// sentence for the person on failure, so the dialog can show it in place.
-  Future<({String secret, String uri})?> startAuthenticator() async {
+  Future<({String secret, String uri})?> startAuthenticator(
+    String question,
+    String answer,
+  ) async {
     try {
-      return await _cloudConnection().startAuthenticator();
+      return await _cloudConnection().startAuthenticator(question, answer);
     } catch (e) {
       _error = _readableError(e);
       _notify();

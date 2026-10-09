@@ -163,126 +163,127 @@ test("web push cannot target private addresses or misleading Apple hostnames", (
 });
 
 // --- Authenticator (TOTP) protection --------------------------------------
+// Either way in works: a pairing link, or the secret answer plus a current code.
+const QA = { question: "Name of my first pet?", answer: "Rex the Dog" };
 async function codeNow(s, secret, stepsAhead = 0) {
   return hotp(base32Decode(secret), counterAt(s.now()) + stepsAhead);
 }
-async function protectedHome(s) {
+async function protectedHome(s, qa = QA) {
   const { id } = await s.home();
-  const started = await s.api("/rooms/" + id + "/totp-start");
+  const started = await s.api("/rooms/" + id + "/totp-start", "home", qa);
   const code = await codeNow(s, started.body.secret);
   const confirmed = await s.api("/rooms/" + id + "/totp-confirm", "home", { code });
   return { id, secret: started.body.secret, started, confirmed };
 }
 const freshInvite = async (s, id) => (await s.api("/rooms/" + id + "/invite")).body.secret;
+const byCode = (s, answer, code, uid = "away") => s.api("/join-code", uid, { answer, code });
 
-test("authenticator setup returns a secret and an address for the app, to the owner only", async () => {
+test("setup needs a question and an answer, and is for the owner only", async () => {
   const s = setup(); const { id, secret } = await s.home(); await s.join(id, secret);
-  const started = await s.api("/rooms/" + id + "/totp-start");
+  assert.equal((await s.api("/rooms/" + id + "/totp-start", "home", {})).status, 400);
+  assert.equal((await s.api("/rooms/" + id + "/totp-start", "home", { question: "Pet?", answer: "a" })).status, 400);
+  const started = await s.api("/rooms/" + id + "/totp-start", "home", QA);
   assert.equal(started.status, 200);
   assert.match(started.body.secret, /^[A-Z2-7]{32}$/);
   assert.ok(started.body.uri.startsWith("otpauth://totp/Home%20Listen%3ABedroom?secret="));
-  assert.equal((await s.api("/rooms/" + id + "/totp-start", "away")).status, 403);
-  assert.equal((await s.api("/rooms/" + id + "/totp-start", "stranger")).status, 404);
+  assert.equal((await s.api("/rooms/" + id + "/totp-start", "away", QA)).status, 403);
+  assert.equal((await s.api("/rooms/" + id + "/totp-start", "stranger", QA)).status, 404);
 });
 
 test("protection is not active until the owner proves the app shows matching codes", async () => {
   const s = setup(); const { id } = await s.home();
-  await s.api("/rooms/" + id + "/totp-start");
-  const invite = await freshInvite(s, id);
-  assert.equal((await s.join(id, invite)).status, 200);
-  assert.notEqual((await s.store.get("rooms/" + id)).data.totp, true);
-  const wrong = await s.api("/rooms/" + id + "/totp-confirm", "home", { code: "000000" });
-  assert.equal(wrong.status, 403);
+  const started = await s.api("/rooms/" + id + "/totp-start", "home", QA);
+  assert.equal((await byCode(s, QA.answer, await codeNow(s, started.body.secret))).status, 403);
+  assert.equal((await s.api("/rooms/" + id + "/totp-confirm", "home", { code: "000000" })).status, 403);
   assert.notEqual((await s.store.get("rooms/" + id)).data.totp, true);
 });
 
-test("once on, a valid invitation alone no longer joins", async () => {
+test("a pairing link alone still joins when protection is on", async () => {
   const s = setup(); const { id, confirmed } = await protectedHome(s);
   assert.equal(confirmed.status, 200);
   assert.equal((await s.store.get("rooms/" + id)).data.totp, true);
+  assert.equal((await s.join(id, await freshInvite(s, id))).status, 200);
+});
+
+test("the secret answer and a current code join without any link", async () => {
+  const s = setup(); const { id, secret } = await protectedHome(s);
   s.advance(31000);
-  const invite = await freshInvite(s, id);
-  const missing = await s.join(id, invite);
-  assert.equal(missing.status, 403);
+  const joined = await byCode(s, "  rex THE dog ", await codeNow(s, secret));
+  assert.equal(joined.status, 200);
+  assert.equal(joined.body.roomId, id);
+  assert.equal((await s.store.get("rooms/" + id)).data.members.away, true);
+  s.advance(30000);
+  const code = await codeNow(s, secret);
+  assert.equal((await byCode(s, "Rex the Dog", code.slice(0, 3) + " " + code.slice(3), "second")).status, 200);
+});
+
+test("a wrong answer, an unknown answer, or no code gets nothing", async () => {
+  const s = setup(); const { id, secret } = await protectedHome(s);
+  s.advance(31000);
+  const code = await codeNow(s, secret);
+  const unknown = await byCode(s, "Fluffy", code);
+  assert.equal(unknown.status, 403);
+  assert.equal(unknown.body.code, "totp_invalid");
+  assert.equal((await byCode(s, "", code)).status, 403);
+  const missing = await byCode(s, QA.answer, "");
   assert.equal(missing.body.code, "totp_required");
-  const wrong = await s.api("/rooms/" + id + "/join", "away", { secret: invite, code: "123456" });
-  assert.equal(wrong.status, 403);
-  assert.equal(wrong.body.code, "totp_invalid");
+  assert.equal((await byCode(s, QA.answer, "000000")).body.code, "totp_invalid");
   assert.equal(Object.keys((await s.store.get("rooms/" + id)).data.members).length, 0);
 });
 
-test("the right current code joins, and spaces typed in the code are ignored", async () => {
-  const s = setup(); const { id, secret } = await protectedHome(s);
-  s.advance(31000);
-  const invite = await freshInvite(s, id);
-  const code = await codeNow(s, secret);
-  const joined = await s.api("/rooms/" + id + "/join", "away", { secret: invite, code: code.slice(0, 3) + " " + code.slice(3) });
-  assert.equal(joined.status, 200);
-  assert.equal((await s.store.get("rooms/" + id)).data.members.away, true);
-});
-
 test("a code can be used once, and the next one works", async () => {
-  const s = setup(); const { id, secret } = await protectedHome(s);
+  const s = setup(); const { secret } = await protectedHome(s);
   s.advance(31000);
-  const invite = await freshInvite(s, id);
   const code = await codeNow(s, secret);
-  assert.equal((await s.api("/rooms/" + id + "/join", "away", { secret: invite, code })).status, 200);
-  const replay = await s.api("/rooms/" + id + "/join", "second", { secret: invite, code });
+  assert.equal((await byCode(s, QA.answer, code)).status, 200);
+  const replay = await byCode(s, QA.answer, code, "second");
   assert.equal(replay.status, 403);
   assert.equal(replay.body.code, "totp_invalid");
   s.advance(30000);
-  const next = await codeNow(s, secret);
-  assert.equal((await s.api("/rooms/" + id + "/join", "second", { secret: invite, code: next })).status, 200);
+  assert.equal((await byCode(s, QA.answer, await codeNow(s, secret), "second")).status, 200);
 });
 
 test("repeated wrong codes lock guessing, even for the right code, until the lock passes", async () => {
-  const s = setup(); const { id, secret } = await protectedHome(s);
+  const s = setup(); const { secret } = await protectedHome(s);
   s.advance(31000);
-  const invite = await freshInvite(s, id);
-  for (let i = 0; i < 4; i++) {
-    assert.equal((await s.api("/rooms/" + id + "/join", "away", { secret: invite, code: "000000" })).body.code, "totp_invalid");
-  }
-  const fifth = await s.api("/rooms/" + id + "/join", "away", { secret: invite, code: "000000" });
+  for (let i = 0; i < 4; i++) assert.equal((await byCode(s, QA.answer, "000000")).body.code, "totp_invalid");
+  const fifth = await byCode(s, QA.answer, "000000");
   assert.equal(fifth.status, 403);
   assert.equal(fifth.body.code, "totp_locked");
-  const locked = await s.api("/rooms/" + id + "/join", "away", { secret: invite, code: await codeNow(s, secret) });
-  assert.equal(locked.status, 429);
+  assert.equal((await byCode(s, QA.answer, await codeNow(s, secret))).status, 429);
   s.advance(10 * 60000 + 1000);
-  const again = await freshInvite(s, id);
-  assert.equal((await s.api("/rooms/" + id + "/join", "away", { secret: again, code: await codeNow(s, secret) })).status, 200);
+  assert.equal((await byCode(s, QA.answer, await codeNow(s, secret))).status, 200);
 });
 
-test("the invitation is checked before the code, so codes cannot be guessed without one", async () => {
-  const s = setup(); const { id } = await protectedHome(s);
-  const bad = await s.api("/rooms/" + id + "/join", "away", { secret: "A".repeat(43), code: "123456" });
-  assert.equal(bad.status, 403);
-  assert.equal(bad.body.code, undefined);
-  const doc = await s.store.get("roomTotp/" + id);
-  assert.equal(doc.data.failures, 0);
+test("two homes cannot share the same secret answer", async () => {
+  const s = setup(); await protectedHome(s);
+  const other = await s.api("/rooms", "otherhome", { roomName: "Kitchen" });
+  const clash = await s.api("/rooms/" + other.body.roomId + "/totp-start", "otherhome", { question: "Different?", answer: "rex the dog" });
+  assert.equal(clash.status, 409);
 });
 
-test("the secret never appears in the room or the invitation", async () => {
+test("the secret, question and answer never appear in the room or the invitation", async () => {
   const s = setup(); const { id, secret } = await protectedHome(s);
-  assert.ok(!JSON.stringify((await s.store.get("rooms/" + id)).data).includes(secret));
-  assert.ok(!JSON.stringify((await s.store.get("roomInvites/" + id)).data).includes(secret));
+  const visible = JSON.stringify((await s.store.get("rooms/" + id)).data) +
+    JSON.stringify((await s.store.get("roomInvites/" + id)).data);
+  for (const hidden of [secret, QA.answer.toLowerCase(), QA.question]) assert.ok(!visible.toLowerCase().includes(hidden.toLowerCase()));
 });
 
-test("turning protection off needs a code, then joining needs none", async () => {
+test("turning protection off needs a code, then the answer stops working", async () => {
   const s = setup(); const { id, secret } = await protectedHome(s);
   assert.equal((await s.api("/rooms/" + id + "/totp-off", "home", {})).body.code, "totp_required");
   s.advance(31000);
-  const joined = await s.api("/rooms/" + id + "/join", "away", { secret: await freshInvite(s, id), code: await codeNow(s, secret) });
-  assert.equal(joined.status, 200);
-  s.advance(30000);
+  await s.join(id, await freshInvite(s, id));
   assert.equal((await s.api("/rooms/" + id + "/totp-off", "away", { code: await codeNow(s, secret) })).status, 403);
   const off = await s.api("/rooms/" + id + "/totp-off", "home", { code: await codeNow(s, secret) });
   assert.equal(off.status, 200);
   assert.equal((await s.store.get("rooms/" + id)).data.totp, false);
   assert.equal(await s.store.get("roomTotp/" + id), null);
-  assert.equal((await s.join(id, await freshInvite(s, id))).status, 200);
+  s.advance(30000);
+  assert.equal((await byCode(s, QA.answer, await codeNow(s, secret), "second")).status, 403);
 });
 
 test("setup cannot be restarted while on, which would swap the secret under the owner", async () => {
   const s = setup(); const { id } = await protectedHome(s);
-  assert.equal((await s.api("/rooms/" + id + "/totp-start")).status, 409);
+  assert.equal((await s.api("/rooms/" + id + "/totp-start", "home", QA)).status, 409);
 });

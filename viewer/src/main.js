@@ -84,18 +84,8 @@ function revoke() {
 async function pair(value) {
   const invite = parsePairing(value, location.origin);
   if (!invite) throw new Error("Use a Home Listen pairing link from this server.");
-  const code = el("totp-code").value.replace(/\s+/g, "");
-  try {
-    await api("/rooms/" + invite.roomId + "/join", { secret: invite.secret, ...(code ? { code } : {}) });
-  } catch (error) {
-    // The link is fine; the home also wants a code from an authenticator app.
-    if (error.code === "totp_required" || error.code === "totp_invalid") {
-      el("totp-code").focus();
-      throw new Error(error.code === "totp_invalid" ? "That code was not accepted. Enter the newest one." : "Enter the 6-digit code from your authenticator app.");
-    }
-    throw error;
-  }
-  el("pair-code").value = ""; el("totp-code").value = "";
+  await api("/rooms/" + invite.roomId + "/join", { secret: invite.secret });
+  el("pair-code").value = "";
   await watchRoom(invite.roomId);
   event("Paired with your home phone");
 }
@@ -228,17 +218,27 @@ try {
   message(error.message ?? "Set up Firebase and the cloud server before pairing.", true);
 }
 
-// Pair as soon as both the link and a full 6-digit code are in, whichever was
-// entered last. A code typed before the link waits and asks for the link.
-function tryAutoPair() {
+// The other way in: the home's secret answer plus a current authenticator code.
+// It submits by itself once the answer is filled and the sixth digit is typed.
+async function joinWithCode() {
+  const answer = el("answer").value.trim();
   const code = el("totp-code").value.replace(/\D/g, "");
-  if (code.length !== 6 || el("pair-button").disabled) return;
-  if (!el("pair-code").value.trim()) {
-    message("Now paste the pairing link from your home phone.", true);
-    el("pair-code").focus();
-    return;
-  }
-  el("pair-form").requestSubmit();
+  if (!answer || code.length !== 6 || el("code-button").disabled) return;
+  el("code-button").disabled = true;
+  try {
+    const result = await api("/join-code", { answer, code });
+    el("answer").value = ""; el("totp-code").value = "";
+    await watchRoom(result.roomId);
+    event("Paired with your home phone");
+  } catch (error) { message(error.message, true); el("totp-code").select(); }
+  finally { el("code-button").disabled = false; }
 }
-el("totp-code").addEventListener("input", tryAutoPair);
-el("pair-code").addEventListener("input", () => { if (el("totp-code").value.replace(/\D/g, "").length === 6) tryAutoPair(); });
+el("code-form").addEventListener("submit", (e) => { e.preventDefault(); void joinWithCode(); });
+el("totp-code").addEventListener("input", () => {
+  if (el("totp-code").value.replace(/\D/g, "").length !== 6) return;
+  if (!el("answer").value.trim()) { message("Enter the secret answer for your home.", true); el("answer").focus(); return; }
+  void joinWithCode();
+});
+el("answer").addEventListener("input", () => {
+  if (el("totp-code").value.replace(/\D/g, "").length === 6) void joinWithCode();
+});

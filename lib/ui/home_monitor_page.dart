@@ -340,13 +340,19 @@ class _Dashboard extends StatelessWidget {
             ),
           ),
         if (!home) const SizedBox(height: 18),
-        if (!home && !monitor.hasPairing)
+        if (!home && !monitor.hasPairing) ...[
           FilledButton.icon(
             onPressed: monitor.busy ? null : () => _scan(context, monitor),
             icon: const Icon(Icons.qr_code_scanner),
             label: const Text('Scan home phone’s code'),
-          )
-        else
+          ),
+          TextButton(
+            onPressed: monitor.busy
+                ? null
+                : () => _joinWithCode(context, monitor),
+            child: const Text('Join with secret answer + code'),
+          ),
+        ] else
           FilledButton.icon(
             style: home && on
                 ? FilledButton.styleFrom(
@@ -759,7 +765,7 @@ class _Devices extends StatelessWidget {
                       Expanded(
                         child: Text(
                           monitor.authenticatorOn
-                              ? 'Authenticator code is required to join'
+                              ? 'Authenticator code to join is on'
                               : 'Authenticator code to join',
                           style: const TextStyle(fontWeight: FontWeight.w600),
                         ),
@@ -769,8 +775,8 @@ class _Devices extends StatelessWidget {
                   const SizedBox(height: 8),
                   Text(
                     monitor.authenticatorOn
-                        ? 'A new listening phone needs the pairing code and a 6-digit code from your authenticator app.'
-                        : 'Ask for a 6-digit code from an authenticator app when a new phone pairs, so a leaked pairing link alone cannot get in.',
+                        ? 'A new listening phone can join with the pairing code, or with your secret answer and a 6-digit code from your authenticator app.'
+                        : 'Let a new phone join without a link, using a secret answer and a 6-digit code from an authenticator app.',
                   ),
                   const SizedBox(height: 8),
                   OutlinedButton(
@@ -786,9 +792,8 @@ class _Devices extends StatelessWidget {
                       if (code == null) return;
                       final error = await monitor.disableAuthenticator(code);
                       if (error != null && context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text(error)),
-                        );
+                        ScaffoldMessenger.of(context)
+                            .showSnackBar(SnackBar(content: Text(error)));
                       }
                     },
                     child: Text(
@@ -868,6 +873,12 @@ class _Devices extends StatelessWidget {
               }
             },
             child: const Text('Paste a pairing code'),
+          ),
+          TextButton(
+            onPressed: monitor.busy
+                ? null
+                : () => _joinWithCode(context, monitor),
+            child: const Text('Join with secret answer + code'),
           ),
         ],
         const SizedBox(height: 24),
@@ -1276,22 +1287,70 @@ Future<void> _accept(
   HomeMonitor monitor,
   String code,
 ) async {
-  String? authCode;
-  while (true) {
-    final ok = await monitor.pair(code, authCode: authCode);
-    if (ok) return;
-    final prompt = monitor.authenticatorPrompt;
-    if (prompt == null || !context.mounted) break;
-    authCode = await _askCode(context, prompt);
-    if (authCode == null) return;
-  }
-  if (context.mounted) {
+  final ok = await monitor.pair(code);
+  if (!ok && context.mounted) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          monitor.error ??
-              'That code could not be paired. Use the code shown on your home phone.',
+          monitor.error ?? 'That code could not be paired. Use the code shown on your home phone.',
         ),
+      ),
+    );
+  }
+}
+
+/// The way in without a link: the home's secret answer and a current code.
+Future<void> _joinWithCode(BuildContext context, HomeMonitor monitor) async {
+  final answer = TextEditingController();
+  final code = TextEditingController();
+  final go = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Join with a code'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: answer,
+              autofocus: true,
+              decoration: const InputDecoration(labelText: 'Secret answer'),
+            ),
+            TextField(
+              controller: code,
+              keyboardType: TextInputType.number,
+              maxLength: 6,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              decoration: const InputDecoration(
+                labelText: 'Authenticator code',
+              ),
+              onSubmitted: (_) => Navigator.pop(context, true),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text('Join'),
+        ),
+      ],
+    ),
+  );
+  final a = answer.text;
+  final c = code.text;
+  answer.dispose();
+  code.dispose();
+  if (go != true) return;
+  final ok = await monitor.pairWithCode(a, c);
+  if (!ok && context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(monitor.error ?? 'That answer or code is not right.'),
       ),
     );
   }
@@ -1344,8 +1403,63 @@ Future<void> _setUpAuthenticator(
   BuildContext context,
   HomeMonitor monitor,
 ) async {
-  final setup = await monitor.startAuthenticator();
-  if (setup == null || !context.mounted) return;
+  final question = TextEditingController();
+  final answer = TextEditingController();
+  final named = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Secret question'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'A listening phone can join without a link by giving the secret answer and a code from your authenticator app. Pick an answer only you would know.',
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: question,
+              maxLength: 80,
+              decoration: const InputDecoration(
+                labelText: 'Question (a reminder, shown only here)',
+              ),
+            ),
+            TextField(
+              controller: answer,
+              maxLength: 80,
+              decoration: const InputDecoration(labelText: 'Secret answer'),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text('Next'),
+        ),
+      ],
+    ),
+  );
+  final asked = question.text;
+  final given = answer.text;
+  question.dispose();
+  answer.dispose();
+  if (named != true || !context.mounted) return;
+  final setup = await monitor.startAuthenticator(asked, given);
+  if (setup == null) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(monitor.error ?? 'Could not start setup.')),
+      );
+    }
+    return;
+  }
+  if (!context.mounted) return;
   final controller = TextEditingController();
   String? problem;
   var busy = false;
