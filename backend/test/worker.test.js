@@ -312,3 +312,28 @@ test("clearing the answer closes the no-link way in but keeps the authenticator"
   assert.equal((await byCode(s, QA.answer, await codeNow(s, secret))).status, 403);
   assert.equal((await s.api("/rooms/" + id + "/answer-info", "home", {})).body.enabled, true);
 });
+
+test("the home lists connected phones and can revoke just one", async () => {
+  const s = setup(); const { id } = await s.home();
+  await s.api("/rooms/" + id + "/join", "phoneA", { secret: await freshInvite(s, id), label: "Galaxy S24" });
+  await s.api("/rooms/" + id + "/join", "phoneB", { secret: await freshInvite(s, id), label: "Web browser" });
+  const list = await s.api("/rooms/" + id + "/members", "home", {});
+  assert.deepEqual(list.body.members.map((m) => m.label).sort(), ["Galaxy S24", "Web browser"]);
+  assert.equal((await s.api("/rooms/" + id + "/members", "phoneA", {})).status, 403);
+  assert.equal((await s.api("/rooms/" + id + "/revoke-member", "phoneA", { uid: "phoneB" })).status, 403);
+  assert.equal((await s.api("/rooms/" + id + "/revoke-member", "home", { uid: "nobody" })).status, 404);
+  assert.equal((await s.api("/rooms/" + id + "/revoke-member", "home", { uid: "phoneB" })).status, 200);
+  const after = await s.api("/rooms/" + id + "/members", "home", {});
+  assert.deepEqual(after.body.members.map((m) => m.uid), ["phoneA"]);
+  assert.equal((await s.api("/rooms/" + id, "phoneB", {}, "GET")).status, 404);
+  assert.equal((await s.api("/rooms/" + id, "phoneA", {}, "GET")).status, 200);
+});
+
+test("a phone that joined with an answer and code shows up with its name", async () => {
+  const s = setup(); const { secret } = await protectedHome(s);
+  s.advance(31000);
+  const joined = await s.api("/join-code", "phoneC", { answer: QA.answer, code: await codeNow(s, secret), label: "Pixel 8" });
+  assert.equal(joined.status, 200);
+  const list = await s.api("/rooms/" + joined.body.roomId + "/members", "home", {});
+  assert.equal(list.body.members[0].label, "Pixel 8");
+});

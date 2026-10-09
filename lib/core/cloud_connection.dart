@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -17,6 +18,36 @@ import 'cloud_pairing.dart';
 
 /// A refusal from the server. [code] says why when the app can act on it, e.g.
 /// `totp_required` means the authenticator code has to be asked for.
+/// One listening phone as the home phone sees it.
+class CloudMember {
+  const CloudMember({
+    required this.uid,
+    required this.label,
+    required this.joinedAt,
+    required this.listening,
+  });
+  final String uid;
+  final String label;
+  final DateTime? joinedAt;
+  final bool listening;
+}
+
+/// A name for this phone, shown in the home phone's list of connected devices.
+Future<String> _deviceName() async {
+  try {
+    final info = DeviceInfoPlugin();
+    if (Platform.isAndroid) {
+      final android = await info.androidInfo;
+      final brand = android.manufacturer;
+      final name =
+          '${brand.isEmpty ? '' : '${brand[0].toUpperCase()}${brand.substring(1)} '}${android.model}';
+      return name.trim().isEmpty ? 'Android phone' : name.trim();
+    }
+    if (Platform.isIOS) return (await info.iosInfo).name;
+  } catch (_) {}
+  return 'Listening phone';
+}
+
 class CloudApiException implements Exception {
   CloudApiException(this.message, [this.code]);
   final String message;
@@ -235,6 +266,7 @@ class CloudConnection {
     }
     final result = await api('/rooms/${invite.roomId}/join', {
       'secret': invite.secret,
+      'label': await _deviceName(),
     });
     roomId = invite.roomId;
     room = Map<String, dynamic>.from(result['room'] as Map);
@@ -245,7 +277,11 @@ class CloudConnection {
   /// Joins without a link: the secret answer finds the home and the code from
   /// the owner's authenticator app proves it.
   Future<void> joinWithCode(String answer, String code) async {
-    final result = await api('/join-code', {'answer': answer, 'code': code});
+    final result = await api('/join-code', {
+      'answer': answer,
+      'code': code,
+      'label': await _deviceName(),
+    });
     roomId = result['roomId'] as String;
     room = Map<String, dynamic>.from(result['room'] as Map);
     await prefs.setString('cloud_paired_room', roomId!);
@@ -262,6 +298,25 @@ class CloudConnection {
     final result = await api('/rooms/$roomId/totp-start', {});
     return (secret: result['secret'] as String, uri: result['uri'] as String);
   }
+
+  /// The phones paired to this home, for the home phone's Devices page.
+  Future<List<CloudMember>> members() async {
+    final result = await api('/rooms/$roomId/members', {});
+    return [
+      for (final m in (result['members'] as List).cast<Map>())
+        CloudMember(
+          uid: m['uid'] as String,
+          label: m['label'] as String,
+          joinedAt: m['joinedAtMs'] is int
+              ? DateTime.fromMillisecondsSinceEpoch(m['joinedAtMs'] as int)
+              : null,
+          listening: m['listening'] == true,
+        ),
+    ];
+  }
+
+  Future<void> revokeMember(String uid) =>
+      api('/rooms/$roomId/revoke-member', {'uid': uid});
 
   /// The secret question (a reminder) and whether an answer is set.
   Future<({String? question, bool hasAnswer})> answerInfo() async {

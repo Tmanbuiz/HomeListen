@@ -81,10 +81,16 @@ function revoke() {
   el("home-panel").hidden = true; el("pair-panel").hidden = false;
   message("Pairing was removed or changed. Show a new code at home.", true);
 }
+function browserName() {
+  const ua = navigator.userAgent;
+  const os = /iPhone|iPad/.test(ua) ? "iPhone" : /Android/.test(ua) ? "Android" : /Windows/.test(ua) ? "Windows" : /Mac/.test(ua) ? "Mac" : "device";
+  const browser = /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox" : /Safari\//.test(ua) ? "Safari" : "Browser";
+  return browser + " on " + os;
+}
 async function pair(value) {
   const invite = parsePairing(value, location.origin);
   if (!invite) throw new Error("Use a Home Listen pairing link from this server.");
-  await api("/rooms/" + invite.roomId + "/join", { secret: invite.secret });
+  await api("/rooms/" + invite.roomId + "/join", { secret: invite.secret, label: browserName() });
   el("pair-code").value = "";
   await watchRoom(invite.roomId);
   event("Paired with your home phone");
@@ -226,7 +232,7 @@ async function joinWithCode() {
   if (!answer || code.length !== 6 || el("code-button").disabled) return;
   el("code-button").disabled = true;
   try {
-    const result = await api("/join-code", { answer, code });
+    const result = await api("/join-code", { answer, code, label: browserName() });
     el("answer").value = ""; el("totp-code").value = "";
     await watchRoom(result.roomId);
     event("Paired with your home phone");

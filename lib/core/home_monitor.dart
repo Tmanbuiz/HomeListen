@@ -535,6 +535,25 @@ class HomeMonitor extends ChangeNotifier {
     }
   }
 
+  /// Phones paired to this home (home phone only). Null if it could not load.
+  Future<List<CloudMember>?> connectedDevices() async {
+    try {
+      return await _cloudConnection().members();
+    } catch (e) {
+      _error = _readableError(e);
+      return null;
+    }
+  }
+
+  Future<String?> revokeDevice(String uid) async {
+    try {
+      await _cloudConnection().revokeMember(uid);
+      return null;
+    } catch (e) {
+      return _readableError(e);
+    }
+  }
+
   Future<({String? question, bool hasAnswer})?> answerInfo() async {
     try {
       return await _cloudConnection().answerInfo();

@@ -115,6 +115,23 @@ const answerKey = (answer) => digest("home-listen-answer:" + normalizeAnswer(ans
  * (a valid invitation, or the secret answer plus an authenticator code).
  * Compare-and-swap keeps parallel joins from exceeding five phones.
  */
+function deviceLabel(value) {
+  const text = typeof value === "string" ? value.replace(/[\u0000-\u001f]/g, " ").trim().slice(0, 40) : "";
+  return text || "Listening phone";
+}
+
+/** Remembers a name and time for the home phone's list of connected devices. */
+async function rememberMember(store, id, uid, label, nowMs) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const doc = await store.get("roomMembers/" + id);
+    const next = { ...(doc?.data ?? {}), [uid]: { label, joinedAtMs: nowMs } };
+    try {
+      await store.put("roomMembers/" + id, next, doc ? doc.version : null);
+      return;
+    } catch (error) { if (error.status !== 409 || attempt === 4) throw error; }
+  }
+}
+
 async function addMember(store, id, uid, generation = null) {
   for (let attempt = 0; attempt < 5; attempt++) {
     const room = await store.get("rooms/" + id);
@@ -320,6 +337,7 @@ export function createWorker(overrides = {}) {
       if (!totp?.data.enabled) throw refused();
       await spendTotp(store, roomId, totp, input.code, now());
       const data = await addMember(store, roomId, uid);
+      await rememberMember(store, roomId, uid, deviceLabel(input.label), now());
       return json({ roomId, room: data });
     }
     const match = /^\/api\/rooms\/([A-Za-z0-9_-]+)(?:\/([a-z-]+))?$/.exec(path);
@@ -341,10 +359,11 @@ export function createWorker(overrides = {}) {
       // A valid invitation authorizes this first membership; an authenticated
       // token alone does not.
       const data = await addMember(store, id, uid, invite.data.generation);
+      await rememberMember(store, id, uid, deviceLabel(input.label), now());
       return json({ roomId: id, room: data });
     }
 
-    const ownerOnly = ["invite", "state", "revoke", "alerts", "totp-start", "totp-confirm", "totp-off", "answer-info", "answer-set"]
+    const ownerOnly = ["invite", "state", "revoke", "alerts", "totp-start", "totp-confirm", "totp-off", "answer-info", "answer-set", "members", "revoke-member"]
       .includes(action);
     const room = await readRoom(store, id, uid, ownerOnly);
 
@@ -380,6 +399,36 @@ export function createWorker(overrides = {}) {
       await store.put("roomTotp/" + id, { ...fresh.data, enabled: true }, fresh.version);
       await mutateRoom(store, id, uid, true, (data) => ({ ...data, totp: true }));
       return json({ enabled: true });
+    }
+    if (action === "members" && request.method === "POST") {
+      const known = (await store.get("roomMembers/" + id))?.data ?? {};
+      const members = Object.keys(room.data.members ?? {}).filter((member) => room.data.members[member] === true)
+        .map((member) => ({
+          uid: member,
+          label: known[member]?.label ?? "Listening phone",
+          joinedAtMs: known[member]?.joinedAtMs ?? null,
+          listening: room.data.activeSessions?.[member] != null
+        }));
+      return json({ members });
+    }
+    if (action === "revoke-member" && request.method === "POST") {
+      // Removes one listening phone. The others, and the pairing codes, are
+      // untouched; the removed phone must be given a new code to come back.
+      const input = await body(request);
+      if (typeof input.uid !== "string" || room.data.members?.[input.uid] !== true) {
+        throw new HttpError(404, "That phone is not paired.");
+      }
+      await mutateRoom(store, id, uid, true, (data) => {
+        delete data.members[input.uid]; delete data.watchers[input.uid]; delete data.activeSessions[input.uid];
+        return data;
+      });
+      await store.delete("rooms/" + id + "/devices/" + input.uid);
+      const known = await store.get("roomMembers/" + id);
+      if (known) {
+        const { [input.uid]: _gone, ...rest } = known.data;
+        await store.put("roomMembers/" + id, rest, known.version);
+      }
+      return json({ revoked: true });
     }
     if (action === "answer-info" && request.method === "POST") {
       const doc = await store.get("roomTotp/" + id);

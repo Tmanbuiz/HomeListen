@@ -7,6 +7,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import '../core/activity_event.dart';
 import '../core/home_monitor.dart';
 import '../core/pairing.dart';
+import '../core/cloud_connection.dart' show CloudMember;
 import '../core/cloud_pairing.dart';
 import '../protocols/mic_monitor.dart';
 import 'design.dart';
@@ -754,6 +755,8 @@ class _Devices extends StatelessWidget {
           ),
           if (monitor.cloudMode) ...[
             const SizedBox(height: 12),
+            _ConnectedDevices(monitor: monitor),
+            const SizedBox(height: 12),
             SurfaceCard(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -1232,6 +1235,110 @@ String _time(DateTime time) {
   final hour = local.hour % 12 == 0 ? 12 : local.hour % 12;
   final suffix = local.hour < 12 ? 'am' : 'pm';
   return '${local.day}/${local.month} • $hour:${local.minute.toString().padLeft(2, '0')}$suffix';
+}
+
+/// The phones paired to this home, each with its own Revoke button. Revoking
+/// one leaves the others and the pairing codes alone.
+class _ConnectedDevices extends StatefulWidget {
+  const _ConnectedDevices({required this.monitor});
+  final HomeMonitor monitor;
+  @override
+  State<_ConnectedDevices> createState() => _ConnectedDevicesState();
+}
+
+class _ConnectedDevicesState extends State<_ConnectedDevices> {
+  List<CloudMember>? _members;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    final list = await widget.monitor.connectedDevices();
+    if (!mounted) return;
+    setState(() {
+      _members = list;
+      _loading = false;
+    });
+  }
+
+  Future<void> _revoke(CloudMember member) async {
+    final sure = await _confirm(
+      context,
+      'Revoke ${member.label}?',
+      'This phone is disconnected and can no longer listen. It can only come back with a new pairing code.',
+    );
+    if (sure != true) return;
+    final error = await widget.monitor.revokeDevice(member.uid);
+    if (!mounted) return;
+    if (error != null) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(error)));
+    }
+    await _load();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final members = _members;
+    return SurfaceCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.devices_outlined),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text(
+                  'Connected devices',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Refresh',
+                onPressed: _loading ? null : _load,
+                icon: const Icon(Icons.refresh),
+              ),
+            ],
+          ),
+          if (_loading && members == null)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: LinearProgressIndicator(),
+            )
+          else if (members == null)
+            const Text('Could not load the list. Check your connection.')
+          else if (members.isEmpty)
+            const Text('No listening phones are paired yet.')
+          else
+            for (final member in members)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(
+                  member.listening ? Icons.headphones : Icons.smartphone,
+                ),
+                title: Text(member.label),
+                subtitle: Text(
+                  [
+                    if (member.listening) 'Listening now',
+                    if (member.joinedAt != null)
+                      'Paired ${_time(member.joinedAt!)}',
+                  ].join(' • '),
+                ),
+                trailing: TextButton(
+                  onPressed: () => _revoke(member),
+                  child: const Text('Revoke'),
+                ),
+              ),
+        ],
+      ),
+    );
+  }
 }
 
 Future<bool?> _confirm(BuildContext context, String title, String text) =>
