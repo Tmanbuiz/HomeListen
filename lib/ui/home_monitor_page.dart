@@ -775,7 +775,7 @@ class _Devices extends StatelessWidget {
                   const SizedBox(height: 8),
                   Text(
                     monitor.authenticatorOn
-                        ? 'A new listening phone can join with the pairing code, or with your secret answer and a 6-digit code from your authenticator app.'
+                        ? 'A new listening phone can join with the pairing code, or with your secret answer and a 6-digit code from your authenticator app. You can change the answer any time.'
                         : 'Let a new phone join without a link, using a secret answer and a 6-digit code from an authenticator app.',
                   ),
                   const SizedBox(height: 8),
@@ -800,6 +800,11 @@ class _Devices extends StatelessWidget {
                       monitor.authenticatorOn ? 'Turn off' : 'Set up',
                     ),
                   ),
+                  if (monitor.authenticatorOn)
+                    TextButton(
+                      onPressed: () => _changeAnswer(context, monitor),
+                      child: const Text('Change secret answer'),
+                    ),
                 ],
               ),
             ),
@@ -1403,54 +1408,7 @@ Future<void> _setUpAuthenticator(
   BuildContext context,
   HomeMonitor monitor,
 ) async {
-  final question = TextEditingController();
-  final answer = TextEditingController();
-  final named = await showDialog<bool>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: const Text('Secret question'),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'A listening phone can join without a link by giving the secret answer and a code from your authenticator app. Pick an answer only you would know.',
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: question,
-              maxLength: 80,
-              decoration: const InputDecoration(
-                labelText: 'Question (a reminder, shown only here)',
-              ),
-            ),
-            TextField(
-              controller: answer,
-              maxLength: 80,
-              decoration: const InputDecoration(labelText: 'Secret answer'),
-            ),
-          ],
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context, false),
-          child: const Text('Cancel'),
-        ),
-        TextButton(
-          onPressed: () => Navigator.pop(context, true),
-          child: const Text('Next'),
-        ),
-      ],
-    ),
-  );
-  final asked = question.text;
-  final given = answer.text;
-  question.dispose();
-  answer.dispose();
-  if (named != true || !context.mounted) return;
-  final setup = await monitor.startAuthenticator(asked, given);
+  final setup = await monitor.startAuthenticator();
   if (setup == null) {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1538,6 +1496,83 @@ Future<void> _setUpAuthenticator(
     ),
   );
   controller.dispose();
+  if (monitor.authenticatorOn && context.mounted) {
+    await _changeAnswer(context, monitor);
+  }
+}
+
+/// The secret answer for joining without a link. Separate from the
+/// authenticator, so it can be changed whenever wanted. Empty removes it.
+Future<void> _changeAnswer(BuildContext context, HomeMonitor monitor) async {
+  final info = await monitor.answerInfo();
+  if (info == null || !context.mounted) return;
+  final question = TextEditingController(text: info.question ?? '');
+  final answer = TextEditingController();
+  final choice = await showDialog<String>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Secret answer'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              info.hasAnswer
+                  ? 'A new phone can join with this answer and a code from your authenticator app. Type a new answer to change it.'
+                  : 'Pick an answer only you know. A new phone can then join with it and a code from your authenticator app, without a link.',
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: question,
+              maxLength: 80,
+              decoration: const InputDecoration(
+                labelText: 'Question (a reminder, shown only here)',
+              ),
+            ),
+            TextField(
+              controller: answer,
+              maxLength: 80,
+              decoration: const InputDecoration(labelText: 'New secret answer'),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        if (info.hasAnswer)
+          TextButton(
+            onPressed: () => Navigator.pop(context, 'remove'),
+            child: const Text('Remove answer'),
+          ),
+        TextButton(
+          onPressed: () => Navigator.pop(context, 'save'),
+          child: const Text('Save'),
+        ),
+      ],
+    ),
+  );
+  final asked = question.text;
+  final given = answer.text;
+  question.dispose();
+  answer.dispose();
+  if (choice == null) return;
+  final error = await monitor.setAnswer(asked, choice == 'remove' ? '' : given);
+  if (context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          error ??
+              (choice == 'remove'
+                  ? 'Secret answer removed.'
+                  : 'Secret answer saved.'),
+        ),
+      ),
+    );
+  }
 }
 
 Future<void> _volumeSheet(

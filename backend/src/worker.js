@@ -344,7 +344,7 @@ export function createWorker(overrides = {}) {
       return json({ roomId: id, room: data });
     }
 
-    const ownerOnly = ["invite", "state", "revoke", "alerts", "totp-start", "totp-confirm", "totp-off"]
+    const ownerOnly = ["invite", "state", "revoke", "alerts", "totp-start", "totp-confirm", "totp-off", "answer-info", "answer-set"]
       .includes(action);
     const room = await readRoom(store, id, uid, ownerOnly);
 
@@ -362,24 +362,11 @@ export function createWorker(overrides = {}) {
       if (existing?.data.enabled) {
         throw new HttpError(409, "Authenticator protection is already on. Turn it off first to set it up again.");
       }
-      const input = await body(request);
-      const question = typeof input.question === "string" ? input.question.trim() : "";
-      if (question.length < 3 || question.length > 80) {
-        throw new HttpError(400, "Write a secret question of 3 to 80 characters.");
-      }
-      if (normalizeAnswer(input.answer).length < 3 || String(input.answer).length > 80) {
-        throw new HttpError(400, "Use a secret answer of 3 to 80 characters.");
-      }
-      const answerHash = await answerKey(input.answer);
-      const taken = await store.get("answerIndex/" + answerHash);
-      if (taken && taken.data.roomId !== id) {
-        throw new HttpError(409, "Choose a different secret answer.");
-      }
       const secret = newSecret();
       // Not active yet: it only starts to apply once the owner proves the app
       // shows matching codes (totp-confirm), so a typo cannot lock them out.
       await store.put("roomTotp/" + id, {
-        secret, question, answerHash, enabled: false, lastCounter: -1, failures: 0, lockedUntilMs: 0
+        secret, enabled: false, lastCounter: -1, failures: 0, lockedUntilMs: 0
       });
       return json({ secret, uri: otpauthUri(secret, room.data.roomName) });
     }
@@ -390,23 +377,56 @@ export function createWorker(overrides = {}) {
       if (doc.data.enabled) return json({ enabled: true });
       await spendTotp(store, id, doc, input.code, now());
       const fresh = await store.get("roomTotp/" + id);
-      try {
-        await store.put("answerIndex/" + fresh.data.answerHash, { roomId: id }, null);
-      } catch (error) {
-        if (error.status !== 409) throw error;
-        const holder = await store.get("answerIndex/" + fresh.data.answerHash);
-        if (holder?.data.roomId !== id) throw new HttpError(409, "Choose a different secret answer.");
-      }
       await store.put("roomTotp/" + id, { ...fresh.data, enabled: true }, fresh.version);
       await mutateRoom(store, id, uid, true, (data) => ({ ...data, totp: true }));
       return json({ enabled: true });
+    }
+    if (action === "answer-info" && request.method === "POST") {
+      const doc = await store.get("roomTotp/" + id);
+      return json({ enabled: Boolean(doc?.data.enabled), question: doc?.data.question ?? null, hasAnswer: Boolean(doc?.data.answerHash) });
+    }
+    if (action === "answer-set" && request.method === "POST") {
+      // Changing the answer is separate from the authenticator itself: the app
+      // stays linked, so the answer can be changed as often as wanted.
+      const input = await body(request);
+      const doc = await store.get("roomTotp/" + id);
+      if (!doc?.data.enabled) throw new HttpError(409, "Turn on the authenticator first.");
+      if (input.answer === "" || input.answer == null) {
+        if (doc.data.answerHash) await store.delete("answerIndex/" + doc.data.answerHash);
+        const { question: _q, answerHash: _a, ...rest } = doc.data;
+        await store.put("roomTotp/" + id, rest, doc.version);
+        return json({ hasAnswer: false });
+      }
+      const question = typeof input.question === "string" ? input.question.trim() : "";
+      if (question.length < 3 || question.length > 80) {
+        throw new HttpError(400, "Write a secret question of 3 to 80 characters.");
+      }
+      if (normalizeAnswer(input.answer).length < 3 || String(input.answer).length > 80) {
+        throw new HttpError(400, "Use a secret answer of 3 to 80 characters.");
+      }
+      const answerHash = await answerKey(input.answer);
+      if (answerHash !== doc.data.answerHash) {
+        try {
+          await store.put("answerIndex/" + answerHash, { roomId: id }, null);
+        } catch (error) {
+          if (error.status !== 409) throw error;
+          const holder = await store.get("answerIndex/" + answerHash);
+          if (holder?.data.roomId !== id) throw new HttpError(409, "Choose a different secret answer.");
+        }
+      }
+      await store.put("roomTotp/" + id, { ...doc.data, question, answerHash }, doc.version);
+      // Only after the new one is saved, so the home is never left without a way in.
+      if (doc.data.answerHash && doc.data.answerHash !== answerHash) {
+        await store.delete("answerIndex/" + doc.data.answerHash);
+      }
+      return json({ hasAnswer: true, question });
     }
     if (action === "totp-off" && request.method === "POST") {
       const input = await body(request);
       const doc = await store.get("roomTotp/" + id);
       if (!doc?.data.enabled) return json({ enabled: false });
       await spendTotp(store, id, doc, input.code, now());
-      await store.delete("answerIndex/" + doc.data.answerHash);
+      if (doc.data.answerHash) await store.delete("answerIndex/" + doc.data.answerHash);
       await store.delete("roomTotp/" + id);
       await mutateRoom(store, id, uid, true, (data) => ({ ...data, totp: false }));
       return json({ enabled: false });

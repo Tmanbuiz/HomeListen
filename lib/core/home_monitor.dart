@@ -525,16 +525,32 @@ class HomeMonitor extends ChangeNotifier {
 
   /// Authenticator setup on the home phone. Each returns null on success, or a
   /// sentence for the person on failure, so the dialog can show it in place.
-  Future<({String secret, String uri})?> startAuthenticator(
-    String question,
-    String answer,
-  ) async {
+  Future<({String secret, String uri})?> startAuthenticator() async {
     try {
-      return await _cloudConnection().startAuthenticator(question, answer);
+      return await _cloudConnection().startAuthenticator();
     } catch (e) {
       _error = _readableError(e);
       _notify();
       return null;
+    }
+  }
+
+  Future<({String? question, bool hasAnswer})?> answerInfo() async {
+    try {
+      return await _cloudConnection().answerInfo();
+    } catch (e) {
+      _error = _readableError(e);
+      _notify();
+      return null;
+    }
+  }
+
+  Future<String?> setAnswer(String question, String answer) async {
+    try {
+      await _cloudConnection().setAnswer(question, answer);
+      return null;
+    } catch (e) {
+      return _readableError(e);
     }
   }
 

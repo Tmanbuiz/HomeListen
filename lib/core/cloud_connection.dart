@@ -257,17 +257,27 @@ class CloudConnection {
 
   /// Starts setup: the secret and the otpauth address for the QR code. Nothing
   /// is enforced until [confirmAuthenticator] sees a matching code.
-  Future<({String secret, String uri})> startAuthenticator(
-    String question,
-    String answer,
-  ) async {
+  Future<({String secret, String uri})> startAuthenticator() async {
     if (roomId == null) await createHome();
-    final result = await api('/rooms/$roomId/totp-start', {
-      'question': question,
-      'answer': answer,
-    });
+    final result = await api('/rooms/$roomId/totp-start', {});
     return (secret: result['secret'] as String, uri: result['uri'] as String);
   }
+
+  /// The secret question (a reminder) and whether an answer is set.
+  Future<({String? question, bool hasAnswer})> answerInfo() async {
+    final result = await api('/rooms/$roomId/answer-info', {});
+    return (
+      question: result['question'] as String?,
+      hasAnswer: result['hasAnswer'] == true,
+    );
+  }
+
+  /// Changes the secret answer. An empty answer removes it. The authenticator
+  /// itself is untouched.
+  Future<void> setAnswer(String question, String answer) => api(
+    '/rooms/$roomId/answer-set',
+    {'question': question, 'answer': answer},
+  );
 
   Future<void> confirmAuthenticator(String code) async {
     await api('/rooms/$roomId/totp-confirm', {'code': code});

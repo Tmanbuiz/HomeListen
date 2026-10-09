@@ -170,19 +170,18 @@ async function codeNow(s, secret, stepsAhead = 0) {
 }
 async function protectedHome(s, qa = QA) {
   const { id } = await s.home();
-  const started = await s.api("/rooms/" + id + "/totp-start", "home", qa);
+  const started = await s.api("/rooms/" + id + "/totp-start");
   const code = await codeNow(s, started.body.secret);
   const confirmed = await s.api("/rooms/" + id + "/totp-confirm", "home", { code });
+  if (qa) assert.equal((await s.api("/rooms/" + id + "/answer-set", "home", qa)).status, 200);
   return { id, secret: started.body.secret, started, confirmed };
 }
 const freshInvite = async (s, id) => (await s.api("/rooms/" + id + "/invite")).body.secret;
 const byCode = (s, answer, code, uid = "away") => s.api("/join-code", uid, { answer, code });
 
-test("setup needs a question and an answer, and is for the owner only", async () => {
+test("setup is for the owner only and needs no answer", async () => {
   const s = setup(); const { id, secret } = await s.home(); await s.join(id, secret);
-  assert.equal((await s.api("/rooms/" + id + "/totp-start", "home", {})).status, 400);
-  assert.equal((await s.api("/rooms/" + id + "/totp-start", "home", { question: "Pet?", answer: "a" })).status, 400);
-  const started = await s.api("/rooms/" + id + "/totp-start", "home", QA);
+  const started = await s.api("/rooms/" + id + "/totp-start");
   assert.equal(started.status, 200);
   assert.match(started.body.secret, /^[A-Z2-7]{32}$/);
   assert.ok(started.body.uri.startsWith("otpauth://totp/Home%20Listen%3ABedroom?secret="));
@@ -192,7 +191,8 @@ test("setup needs a question and an answer, and is for the owner only", async ()
 
 test("protection is not active until the owner proves the app shows matching codes", async () => {
   const s = setup(); const { id } = await s.home();
-  const started = await s.api("/rooms/" + id + "/totp-start", "home", QA);
+  const started = await s.api("/rooms/" + id + "/totp-start");
+  assert.equal((await s.api("/rooms/" + id + "/answer-set", "home", QA)).status, 409);
   assert.equal((await byCode(s, QA.answer, await codeNow(s, started.body.secret))).status, 403);
   assert.equal((await s.api("/rooms/" + id + "/totp-confirm", "home", { code: "000000" })).status, 403);
   assert.notEqual((await s.store.get("rooms/" + id)).data.totp, true);
@@ -257,8 +257,11 @@ test("repeated wrong codes lock guessing, even for the right code, until the loc
 
 test("two homes cannot share the same secret answer", async () => {
   const s = setup(); await protectedHome(s);
-  const other = await s.api("/rooms", "otherhome", { roomName: "Kitchen" });
-  const clash = await s.api("/rooms/" + other.body.roomId + "/totp-start", "otherhome", { question: "Different?", answer: "rex the dog" });
+  const other = await protectedHome({ ...s, home: async () => {
+    const made = await s.api("/rooms", "otherhome", { roomName: "Kitchen" });
+    return { id: made.body.roomId };
+  }, api: (path, uid = "otherhome", ...rest) => s.api(path, uid === "home" ? "otherhome" : uid, ...rest) }, null);
+  const clash = await s.api("/rooms/" + other.id + "/answer-set", "otherhome", { question: "Different?", answer: "rex the dog" });
   assert.equal(clash.status, 409);
 });
 
@@ -286,4 +289,26 @@ test("turning protection off needs a code, then the answer stops working", async
 test("setup cannot be restarted while on, which would swap the secret under the owner", async () => {
   const s = setup(); const { id } = await protectedHome(s);
   assert.equal((await s.api("/rooms/" + id + "/totp-start", "home", QA)).status, 409);
+});
+
+test("the answer can be changed any time without touching the authenticator", async () => {
+  const s = setup(); const { id, secret } = await protectedHome(s);
+  const info = await s.api("/rooms/" + id + "/answer-info", "home", {});
+  assert.deepEqual(info.body, { enabled: true, question: QA.question, hasAnswer: true });
+  assert.equal((await s.api("/rooms/" + id + "/answer-set", "away", { question: "Q?x", answer: "zzz zzz" })).status, 404);
+  const changed = await s.api("/rooms/" + id + "/answer-set", "home", { question: "Favourite street?", answer: "Maple Road" });
+  assert.equal(changed.status, 200);
+  s.advance(31000);
+  assert.equal((await byCode(s, QA.answer, await codeNow(s, secret))).status, 403);
+  s.advance(30000);
+  assert.equal((await byCode(s, "maple road", await codeNow(s, secret))).status, 200);
+  assert.equal((await s.store.get("roomTotp/" + id)).data.secret, secret);
+});
+
+test("clearing the answer closes the no-link way in but keeps the authenticator", async () => {
+  const s = setup(); const { id, secret } = await protectedHome(s);
+  assert.equal((await s.api("/rooms/" + id + "/answer-set", "home", { answer: "" })).body.hasAnswer, false);
+  s.advance(31000);
+  assert.equal((await byCode(s, QA.answer, await codeNow(s, secret))).status, 403);
+  assert.equal((await s.api("/rooms/" + id + "/answer-info", "home", {})).body.enabled, true);
 });
