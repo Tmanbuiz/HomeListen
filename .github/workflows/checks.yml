@@ -89,6 +89,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: homelisten-android-preview-apks
+          retention-days: 7
           path: build/app/outputs/flutter-apk/*.apk
           if-no-files-found: error
       - run: ./gradlew :app:testDebugUnitTest
