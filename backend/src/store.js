@@ -130,7 +130,7 @@ export class FirestoreStore {
   }
   async cleanup(now) {
     const paths = [];
-    for (const collection of ["candidates", "sessions", "roomInvites", "alertReceipts"]) {
+    for (const collection of ["candidates", "sessions", "roomInvites", "alertReceipts", "joinThrottle"]) {
       paths.push(...await this.expired(collection, now, 100));
     }
     if (paths.length) await this.call(":commit", {

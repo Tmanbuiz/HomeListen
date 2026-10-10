@@ -12,6 +12,9 @@
     ] },
     { "collectionGroup": "alertReceipts", "fieldPath": "expiresAt", "indexes": [
       { "order": "ASCENDING", "queryScope": "COLLECTION_GROUP" }
+    ] },
+    { "collectionGroup": "joinThrottle", "fieldPath": "expiresAt", "indexes": [
+      { "order": "ASCENDING", "queryScope": "COLLECTION_GROUP" }
     ] }
   ]
 }

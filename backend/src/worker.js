@@ -72,17 +72,73 @@ function roomName(value) {
  * again, and two requests racing with the same code cannot both win because
  * the update is compare-and-swap.
  */
-async function spendTotp(store, id, doc, code, nowMs) {
+const THROTTLE_WINDOW_MS = 10 * 60_000;
+const THROTTLE_PER_IP = 20;
+const THROTTLE_PER_PHONE = 10;
+
+/**
+ * Counts an attempt against [key] and refuses once [limit] is passed inside the
+ * window. Anonymous sign-ins are free to create, so the address is limited as
+ * well as the phone. The counters expire by themselves.
+ */
+async function throttle(store, key, limit, nowMs) {
+  const path = "joinThrottle/" + await digest("throttle:" + key);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const doc = await store.get(path);
+    const fresh = !doc || nowMs - doc.data.windowStartMs >= THROTTLE_WINDOW_MS;
+    const count = fresh ? 1 : doc.data.count + 1;
+    if (count > limit) {
+      throw new HttpError(429, "Too many attempts. Wait a few minutes and try again.", "throttled");
+    }
+    const next = {
+      count, windowStartMs: fresh ? nowMs : doc.data.windowStartMs,
+      expiresAt: new Date(nowMs + THROTTLE_WINDOW_MS)
+    };
+    try { await store.put(path, next, doc ? doc.version : null); return; }
+    catch (error) { if (error.status !== 409 || attempt === 4) throw error; }
+  }
+}
+
+const b64 = (bytes) => btoa(String.fromCharCode(...bytes));
+const unb64 = (text) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
+async function sealKey(env) {
+  if (!env.TOTP_KEY) return null;
+  const raw = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("home-listen-totp:" + env.TOTP_KEY));
+  return crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
+}
+/** With TOTP_KEY set the authenticator secret is stored encrypted, never in the clear. */
+async function sealSecret(env, secret) {
+  const key = await sealKey(env);
+  if (!key) return { secret };
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const sealed = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(secret)));
+  return { secretEnc: b64([...iv, ...sealed]) };
+}
+async function openSecret(env, data) {
+  if (!data.secretEnc) return data.secret;
+  const key = await sealKey(env);
+  if (!key) throw new HttpError(503, "The authenticator key is not configured on the server.");
+  const bytes = unb64(data.secretEnc);
+  const clear = await crypto.subtle.decrypt({ name: "AES-GCM", iv: bytes.slice(0, 12) }, key, bytes.slice(12));
+  return new TextDecoder().decode(clear);
+}
+
+async function spendTotp(store, id, doc, code, nowMs, env = {}, { owner = false } = {}) {
   const data = doc.data;
-  if ((data.lockedUntilMs ?? 0) > nowMs) {
+  // The lock exists to stop strangers guessing. The signed-in owner is not
+  // locked out of their own settings by someone else's wrong tries.
+  if (!owner && (data.lockedUntilMs ?? 0) > nowMs) {
     throw new HttpError(429, "Too many wrong codes. Wait a few minutes and try again.", "totp_locked");
   }
   const clean = typeof code === "string" ? code.replace(/\s+/g, "") : "";
   if (!clean) {
     throw new HttpError(403, "Enter the 6-digit code from your authenticator app.", "totp_required");
   }
-  const counter = await verifyTotp(base32Decode(data.secret), clean, nowMs, data.lastCounter ?? -1);
+  const counter = await verifyTotp(base32Decode(await openSecret(env, data)), clean, nowMs, data.lastCounter ?? -1);
   const path = "roomTotp/" + id;
+  if (counter == null && owner) {
+    throw new HttpError(403, "That code is not right. Check the code in your authenticator app.", "totp_invalid");
+  }
   if (counter == null) {
     const failures = (data.failures ?? 0) + 1;
     const locked = failures >= TOTP_MAX_FAILURES;
@@ -109,7 +165,15 @@ function normalizeAnswer(value) {
   if (typeof value !== "string") return "";
   return value.normalize("NFKC").toLowerCase().trim().split(/\s+/).join(" ");
 }
-const answerKey = (answer) => digest("home-listen-answer:" + normalizeAnswer(answer));
+const legacyAnswerKey = (answer) => digest("home-listen-answer:" + normalizeAnswer(answer));
+/** With ANSWER_PEPPER set the stored key is an HMAC, so leaked records cannot be guessed offline. */
+async function answerKey(env, answer) {
+  if (!env.ANSWER_PEPPER) return legacyAnswerKey(answer);
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.ANSWER_PEPPER),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(normalizeAnswer(answer))));
+  return b64(mac).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
 
 /**
  * Adds [uid] as a listener. The caller has already proved the right to join
@@ -346,13 +410,29 @@ export function createWorker(overrides = {}) {
       // current authenticator code proves it is really the owner's.
       const input = await body(request);
       const refused = () => new HttpError(403, "That answer or code is not right.", "totp_invalid");
+      await throttle(store, "uid:" + uid, THROTTLE_PER_PHONE, now());
+      await throttle(store, "ip:" + (request.headers.get("cf-connecting-ip") ?? "unknown"), THROTTLE_PER_IP, now());
       if (!normalizeAnswer(input.answer)) throw refused();
-      const index = await store.get("answerIndex/" + await answerKey(input.answer));
+      const currentKey = await answerKey(env, input.answer);
+      let index = await store.get("answerIndex/" + currentKey);
+      let upgrade = false;
+      if (!index && env.ANSWER_PEPPER) {
+        // An answer saved before the key was set: accept it once, then re-save it keyed.
+        index = await store.get("answerIndex/" + await legacyAnswerKey(input.answer));
+        upgrade = Boolean(index);
+      }
       if (!index) throw refused();
       const roomId = index.data.roomId;
       const totp = await store.get("roomTotp/" + roomId);
       if (!totp?.data.enabled) throw refused();
-      await spendTotp(store, roomId, totp, input.code, now());
+      await spendTotp(store, roomId, totp, input.code, now(), env);
+      if (upgrade) {
+        const fresh = await store.get("roomTotp/" + roomId);
+        try { await store.put("answerIndex/" + currentKey, { roomId }, null); }
+        catch (error) { if (error.status !== 409) throw error; }
+        await store.put("roomTotp/" + roomId, { ...fresh.data, answerHash: currentKey }, fresh.version);
+        await store.delete("answerIndex/" + await legacyAnswerKey(input.answer));
+      }
       const data = await addMember(store, roomId, uid);
       await rememberMember(store, roomId, uid, deviceLabel(input.label), now());
       return json({ roomId, room: data });
@@ -406,7 +486,7 @@ export function createWorker(overrides = {}) {
       // Not active yet: it only starts to apply once the owner proves the app
       // shows matching codes (totp-confirm), so a typo cannot lock them out.
       await store.put("roomTotp/" + id, {
-        secret, enabled: false, lastCounter: -1, failures: 0, lockedUntilMs: 0
+        ...await sealSecret(env, secret), enabled: false, lastCounter: -1, failures: 0, lockedUntilMs: 0
       });
       return json({ secret, uri: otpauthUri(secret, room.data.roomName) });
     }
@@ -415,7 +495,7 @@ export function createWorker(overrides = {}) {
       const doc = await store.get("roomTotp/" + id);
       if (!doc) throw new HttpError(409, "Start authenticator setup first.");
       if (doc.data.enabled) return json({ enabled: true });
-      await spendTotp(store, id, doc, input.code, now());
+      await spendTotp(store, id, doc, input.code, now(), env, { owner: true });
       const fresh = await store.get("roomTotp/" + id);
       await store.put("roomTotp/" + id, { ...fresh.data, enabled: true }, fresh.version);
       await mutateRoom(store, id, uid, true, (data) => ({ ...data, totp: true }));
@@ -493,7 +573,7 @@ export function createWorker(overrides = {}) {
       if (normalizeAnswer(input.answer).length < 3 || String(input.answer).length > 80) {
         throw new HttpError(400, "Use a secret answer of 3 to 80 characters.");
       }
-      const answerHash = await answerKey(input.answer);
+      const answerHash = await answerKey(env, input.answer);
       if (answerHash !== doc.data.answerHash) {
         try {
           await store.put("answerIndex/" + answerHash, { roomId: id }, null);
@@ -514,7 +594,7 @@ export function createWorker(overrides = {}) {
       const input = await body(request);
       const doc = await store.get("roomTotp/" + id);
       if (!doc?.data.enabled) return json({ enabled: false });
-      await spendTotp(store, id, doc, input.code, now());
+      await spendTotp(store, id, doc, input.code, now(), env, { owner: true });
       if (doc.data.answerHash) await store.delete("answerIndex/" + doc.data.answerHash);
       await store.delete("roomTotp/" + id);
       await mutateRoom(store, id, uid, true, (data) => ({ ...data, totp: false }));

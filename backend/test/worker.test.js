@@ -41,12 +41,12 @@ class MemoryStore {
     }
   }
 }
-function setup({ sendPush } = {}) {
+function setup({ sendPush, ...extraEnv } = {}) {
   const store = new MemoryStore(); let time = 100000000;
   const pushes = [];
   const env = { FIREBASE_PROJECT_ID: "demo-home", FIREBASE_API_KEY: "public-key",
     FIREBASE_WEB_APP_ID: "public-web-id", FIREBASE_ANDROID_APP_ID: "public-android-id",
-    FIREBASE_SERVICE_ACCOUNT: "private-secret", VAPID_PUBLIC_KEY: "public-vapid", VAPID_PRIVATE_KEY: "private-vapid" };
+    FIREBASE_SERVICE_ACCOUNT: "private-secret", VAPID_PUBLIC_KEY: "public-vapid", VAPID_PRIVATE_KEY: "private-vapid", ...extraEnv };
   const worker = createWorker({
     storeFor: () => store, now: () => time,
     authenticate: async (request) => {
@@ -75,7 +75,7 @@ function setup({ sendPush } = {}) {
     return { id, secret: invite.body.secret };
   }
   const join = (id, secret, uid = "away") => api("/rooms/" + id + "/join", uid, { secret });
-  return { store, api, home, join, pushes, advance: (ms) => time += ms, now: () => time };
+  return { store, api, home, join, pushes, advance: (ms) => time += ms, now: () => time, env };
 }
 
 test("anonymous identity alone cannot read, join, or operate another home", async () => {
@@ -481,4 +481,65 @@ test("revoking everyone or leaving also forgets the stored device names", async 
   assert.deepEqual(Object.keys((await s.store.get("roomMembers/" + id)).data), ["phoneA"]);
   assert.equal((await s.api("/rooms/" + id + "/revoke", "home", {})).status, 200);
   assert.equal(await s.store.get("roomMembers/" + id), null);
+});
+
+test("guessing at the no-link way in is limited per phone and per address", async () => {
+  const s = setup(); await protectedHome(s);
+  const ip = { "cf-connecting-ip": "203.0.113.9" };
+  let last;
+  for (let i = 0; i < 10; i++) last = await s.api("/join-code", "phone1", { answer: "nope" + i, code: "000000" }, "POST", ip);
+  assert.equal(last.status, 403);
+  const blocked = await s.api("/join-code", "phone1", { answer: "nope", code: "000000" }, "POST", ip);
+  assert.equal(blocked.status, 429);
+  assert.equal(blocked.body.code, "throttled");
+  // New anonymous phones from the same address run into the address limit.
+  let status = 0;
+  for (let i = 0; i < 12; i++) status = (await s.api("/join-code", "burner" + i, { answer: "x" + i, code: "000000" }, "POST", ip)).status;
+  assert.equal(status, 429);
+  // Another address, and the window passing, are fine.
+  assert.equal((await s.api("/join-code", "phone2", { answer: "nope", code: "000000" }, "POST", { "cf-connecting-ip": "198.51.100.4" })).status, 403);
+  s.advance(10 * 60000 + 1000);
+  assert.equal((await s.api("/join-code", "phone1", { answer: "nope", code: "000000" }, "POST", ip)).status, 403);
+});
+
+test("with TOTP_KEY the authenticator secret is stored encrypted and still works", async () => {
+  const s = setup({ TOTP_KEY: "test-key-123" });
+  const { id, secret } = await protectedHome(s);
+  const stored = (await s.store.get("roomTotp/" + id)).data;
+  assert.equal(stored.secret, undefined);
+  assert.ok(typeof stored.secretEnc === "string" && !stored.secretEnc.includes(secret));
+  s.advance(31000);
+  assert.equal((await byCode(s, QA.answer, await codeNow(s, secret))).status, 200);
+});
+
+test("with ANSWER_PEPPER the stored answer key is not the plain hash", async () => {
+  const plain = setup(); const peppered = setup({ ANSWER_PEPPER: "pepper-abc" });
+  const a = await protectedHome(plain); const b = await protectedHome(peppered);
+  assert.notEqual((await plain.store.get("roomTotp/" + a.id)).data.answerHash,
+    (await peppered.store.get("roomTotp/" + b.id)).data.answerHash);
+  peppered.advance(31000);
+  assert.equal((await byCode(peppered, QA.answer, await codeNow(peppered, b.secret))).status, 200);
+});
+
+test("an answer saved before the pepper was set still works once, then is re-saved keyed", async () => {
+  const s = setup();
+  const { id, secret } = await protectedHome(s);
+  const before = (await s.store.get("roomTotp/" + id)).data.answerHash;
+  s.env.ANSWER_PEPPER = "added-later";
+  s.advance(31000);
+  assert.equal((await byCode(s, QA.answer, await codeNow(s, secret))).status, 200);
+  const after = (await s.store.get("roomTotp/" + id)).data.answerHash;
+  assert.notEqual(after, before);
+  assert.equal(await s.store.get("answerIndex/" + before), null);
+  s.advance(30000);
+  assert.equal((await byCode(s, QA.answer, await codeNow(s, secret), "second")).status, 200);
+});
+
+test("a stranger locking the join path does not lock the owner out of their own settings", async () => {
+  const s = setup(); const { id, secret } = await protectedHome(s);
+  s.advance(31000);
+  for (let i = 0; i < 5; i++) await byCode(s, QA.answer, "000000", "stranger");
+  assert.equal((await byCode(s, QA.answer, await codeNow(s, secret), "stranger2")).status, 429);
+  const off = await s.api("/rooms/" + id + "/totp-off", "home", { code: await codeNow(s, secret) });
+  assert.equal(off.status, 200);
 });
