@@ -54,6 +54,19 @@
       <button id="forget-button" class="text-button" type="button">Forget this home phone</button>
     </section>
     <aside id="install-help" class="install-note" hidden><strong>Using an iPhone?</strong><p>For alerts, open this page in Safari, tap <strong>Share → Add to Home Screen</strong>, then open Home Listen from its new icon and enable alerts. Requires iOS 16.4 or later.</p></aside>
+    <section id="history-panel" class="activity" hidden>
+      <h2>Sound alert history</h2>
+      <p class="fine">Kept on this phone only, for up to 30 days. No audio is stored.</p>
+      <p id="history-counts" class="counts" aria-label="Alerts per day"></p>
+      <div class="filters">
+        <input id="history-search" class="field" type="search" placeholder="Search alerts" autocomplete="off" aria-label="Search alerts">
+        <select id="history-kind" class="field" aria-label="Sound type"><option value="">All sounds</option><option value="crying">Crying</option><option value="barking">Dog sounds</option><option value="knocking">Knock or doorbell</option><option value="loud sound">Loud sound</option></select>
+        <select id="history-days" class="field" aria-label="Time range"><option value="1">Last day</option><option value="7" selected>Last 7 days</option><option value="30">Last 30 days</option></select>
+      </div>
+      <p id="history-empty" class="fine">No alerts in this range yet.</p>
+      <ol id="history-list"></ol>
+      <div class="actions"><button id="history-export" class="secondary" type="button">Export history</button><button id="history-clear" class="secondary" type="button">Clear history</button></div>
+    </section>
     <section class="activity"><h2>While you’re away</h2><p id="empty-activity">Sound alerts and connection changes appear here.</p><ol id="events"></ol></section>
     <footer>Microphone sharing stays under your control at home.<br>Built by WianTribe. Sound detection can miss or mistake sounds; do not rely on it as an emergency alarm.</footer>
   </main>

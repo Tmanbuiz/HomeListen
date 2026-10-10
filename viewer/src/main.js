@@ -5,6 +5,7 @@ import { getFirestore, doc, collection, onSnapshot, updateDoc, addDoc, Timestamp
 import { parsePairing } from "./pairing.js";
 import { AudioSession } from "./audio-session.js";
 import { memberAccess, canListen } from "./access.js";
+import { clearAll, dailyCounts, exportJson, filterEvents, loadAll, saveEvent } from "./history.js";
 
 const el = (id) => document.getElementById(id);
 const storageKey = "homelisten-room-v2";
@@ -68,7 +69,7 @@ async function watchRoom(id) {
   roomUnsubscribe?.();
   roomId = id;
   localStorage.setItem(storageKey, id);
-  el("pair-panel").hidden = true; el("home-panel").hidden = false;
+  el("pair-panel").hidden = true; el("home-panel").hidden = false; void renderHistory();
   roomUnsubscribe = onSnapshot(doc(db, "rooms", id), (snapshot) => {
     if (!snapshot.exists()) { revoke(); return; }
     const next = snapshot.data();
@@ -88,7 +89,7 @@ function revoke(reason = "Pairing was removed or changed. Show a new code at hom
   roomUnsubscribe?.(); roomUnsubscribe = null;
   clearInterval(leaseTimer); room = null; roomId = null;
   localStorage.removeItem(storageKey);
-  el("home-panel").hidden = true; el("pair-panel").hidden = false;
+  el("home-panel").hidden = true; el("pair-panel").hidden = false; void renderHistory();
   message(reason, true);
 }
 function browserName() {
@@ -97,6 +98,53 @@ function browserName() {
   const browser = /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox" : /Safari\//.test(ua) ? "Safari" : "Browser";
   return browser + " on " + os;
 }
+// --- Sound alert history (on this phone only) --------------------------------
+let historyAll = [];
+async function renderHistory() {
+  historyAll = await loadAll();
+  const panel = el("history-panel");
+  panel.hidden = !roomId;
+  if (!roomId) return;
+  const days = Number(el("history-days").value);
+  const rows = filterEvents(historyAll.filter((e) => !e.roomId || e.roomId === roomId), {
+    query: el("history-search").value, kind: el("history-kind").value, days
+  });
+  const counts = dailyCounts(historyAll, Math.min(days, 14));
+  const peak = Math.max(1, ...counts.map((c) => c.count));
+  el("history-counts").replaceChildren(...counts.map((c) => {
+    const bar = document.createElement("span");
+    bar.style.height = Math.max(4, Math.round((c.count / peak) * 44)) + "px";
+    bar.className = c.count ? "has" : "";
+    bar.title = c.day + ": " + c.count + (c.count === 1 ? " alert" : " alerts");
+    return bar;
+  }));
+  el("history-empty").hidden = rows.length > 0;
+  el("history-list").replaceChildren(...rows.map((e) => {
+    const item = document.createElement("li");
+    const label = document.createElement("span"); label.textContent = e.title;
+    const time = document.createElement("time");
+    time.dateTime = new Date(e.sentAt).toISOString();
+    time.textContent = new Date(e.sentAt).toLocaleString([], { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+    item.append(label, time);
+    return item;
+  }));
+}
+for (const id of ["history-search", "history-kind", "history-days"]) el(id).addEventListener("input", () => void renderHistory());
+el("history-export").addEventListener("click", () => {
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([exportJson(historyAll)], { type: "application/json" }));
+  link.download = "home-listen-history.json";
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 5000);
+});
+el("history-clear").addEventListener("click", async () => {
+  if (!confirm("Clear the alert history on this phone?")) return;
+  await clearAll(); await renderHistory();
+});
+// Alerts that arrived while the app was closed are in the database already.
+document.addEventListener("visibilitychange", () => { if (!document.hidden) void renderHistory(); });
+void renderHistory();
+
 async function pair(value) {
   const invite = parsePairing(value, location.origin);
   if (!invite) throw new Error("Use a Home Listen pairing link from this server.");
@@ -222,7 +270,10 @@ try {
     await navigator.serviceWorker.register("/sw.js");
     registration = await navigator.serviceWorker.ready;
     navigator.serviceWorker.addEventListener("message", (e) => {
-      if (e.data?.type === "sound-alert" && e.data.payload.roomId === roomId) event(e.data.payload.title);
+      if (e.data?.type === "sound-alert" && e.data.data?.roomId === roomId) {
+        event(e.data.data.title);
+        void saveEvent(e.data.data).then(renderHistory);
+      }
     });
   }
   if (openedInvite) await pair(openedInvite);
