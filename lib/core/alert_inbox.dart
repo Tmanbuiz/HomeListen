@@ -28,8 +28,9 @@ class AlertInbox {
         room is! String ||
         room.isEmpty ||
         room.length > 32 ||
-        sentAt == null)
+        sentAt == null) {
       return null;
+    }
     final ageMs = now.millisecondsSinceEpoch - sentAt;
     if (ageMs < -30000 || ageMs >= 15 * 60 * 1000) return null;
     final at = DateTime.fromMillisecondsSinceEpoch(sentAt);

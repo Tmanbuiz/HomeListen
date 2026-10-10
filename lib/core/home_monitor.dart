@@ -1001,8 +1001,9 @@ class HomeMonitor extends ChangeNotifier {
   }
 
   Future<void> startGuardian() async {
-    if (isActive || _busy || _disposed || _deviceRole != DeviceRole.home)
+    if (isActive || _busy || _disposed || _deviceRole != DeviceRole.home) {
       return;
+    }
     if (!Platform.isAndroid) {
       _error = 'Guardian monitoring uses the Android home phone.';
       _notify();
@@ -1013,21 +1014,24 @@ class HomeMonitor extends ChangeNotifier {
     final epoch = ++_epoch;
     _notify();
     try {
-      if (!await _recorder.hasPermission())
+      if (!await _recorder.hasPermission()) {
         throw StateError('Allow microphone access to start Guardian.');
+      }
       await setSoundEnabled(true);
-      if (!soundWatch.ready || !soundWatch.enabled)
+      if (!soundWatch.ready || !soundWatch.enabled) {
         throw StateError(
           'The local sound detector must load before Guardian starts.',
         );
+      }
       if (epoch != _epoch || _disposed) return;
       final shown = await _channel.invokeMethod<bool>('start', {
         'text': 'Guardian on — local sound detection • live listening off',
       });
-      if (shown != true)
+      if (shown != true) {
         throw StateError(
           'Allow visible Home Listen notifications before starting Guardian.',
         );
+      }
       if (epoch != _epoch || _disposed) return;
       final pcm = await _recorder.startStream(
         const RecordConfig(
@@ -1081,13 +1085,15 @@ class HomeMonitor extends ChangeNotifier {
         !cloudMode ||
         cloudServer.isEmpty ||
         _guardianConnecting ||
-        _disposed)
+        _disposed) {
       return;
+    }
     final now = DateTime.now();
     if (!force &&
         _lastGuardianConnect != null &&
-        now.difference(_lastGuardianConnect!) < const Duration(seconds: 30))
+        now.difference(_lastGuardianConnect!) < const Duration(seconds: 30)) {
       return;
+    }
     _lastGuardianConnect = now;
     _guardianConnecting = true;
     final epoch = _epoch;
@@ -1488,8 +1494,9 @@ class HomeMonitor extends ChangeNotifier {
   /// proves that notifications are allowed there.
   Future<String> sendTestAlert() async {
     if (cloudMode && cloudServer.isNotEmpty && _deviceRole == DeviceRole.home) {
-      if (!isMonitoring)
+      if (!isMonitoring) {
         return 'Start Guardian or sharing before sending a test alert.';
+      }
       final event = _addEvent(
         ActivityKind.sound,
         'Test alert',
@@ -1775,8 +1782,9 @@ class HomeMonitor extends ChangeNotifier {
   Future<void> _ensureSoundWatch() async {
     if (_disposed || _soundLoading) return;
     if (prefs?.getBool('sound_enabled') != true &&
-        _deviceRole != DeviceRole.home)
+        _deviceRole != DeviceRole.home) {
       return;
+    }
     if (soundWatch.enabled && soundWatch.ready) return;
     debugPrint('sound watch: restoring after session start');
     await setSoundEnabled(true);

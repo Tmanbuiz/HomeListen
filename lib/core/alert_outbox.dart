@@ -39,9 +39,9 @@ class PendingAlert {
     'title': title,
     'at': at.toIso8601String(),
     'attempts': attempts,
-    if (roomId != null) 'roomId': roomId!,
-    if (origin != null) 'origin': origin!,
-    if (nextAttempt != null) 'nextAttempt': nextAttempt!.toIso8601String(),
+    'roomId': ?roomId,
+    'origin': ?origin,
+    'nextAttempt': ?nextAttempt?.toIso8601String(),
   };
   static List<PendingAlert> restore(String? raw, DateTime now) {
     try {
@@ -50,14 +50,16 @@ class PendingAlert {
       final result = <PendingAlert>[];
       final ids = <String>{};
       for (final row in rows.take(50)) {
-        if (row is! Map || row['id'] is! String || row['title'] is! String)
+        if (row is! Map || row['id'] is! String || row['title'] is! String) {
           continue;
+        }
         if (!RegExp(r'^[A-Za-z0-9_-]{16,64}$').hasMatch(row['id'])) continue;
         final at = DateTime.tryParse('${row['at']}');
         if (at == null ||
             at.isAfter(now) ||
-            now.difference(at) >= const Duration(minutes: 15))
+            now.difference(at) >= const Duration(minutes: 15)) {
           continue;
+        }
         if (!ids.add(row['id'])) continue;
         result.add(
           PendingAlert(

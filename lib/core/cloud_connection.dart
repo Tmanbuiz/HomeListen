@@ -161,8 +161,9 @@ class CloudConnection {
     if (access is Map) {
       if (access['role'] == 'alerts') return false;
       final expiry = access['expiresAtMs'];
-      if (expiry is num && expiry <= DateTime.now().millisecondsSinceEpoch)
+      if (expiry is num && expiry <= DateTime.now().millisecondsSinceEpoch) {
         return false;
+      }
     }
     return true;
   }
@@ -221,8 +222,9 @@ class CloudConnection {
       final data = Map<String, dynamic>.from(message.data);
       if (_closed ||
           home ||
-          AlertInbox.parse(data, roomId, DateTime.now()) == null)
+          AlertInbox.parse(data, roomId, DateTime.now()) == null) {
         return;
+      }
       await AlertInbox.save(prefs, data);
       if (!_closed) onAlert(data);
     }

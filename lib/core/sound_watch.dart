@@ -43,13 +43,17 @@ class SoundGate {
     if (_hits < needed) return false;
     final rule = rules[category];
     if (rule != null &&
-        at.difference(_candidateAt!) < Duration(seconds: rule.minimumSeconds))
+        at.difference(_candidateAt!) < Duration(seconds: rule.minimumSeconds)) {
       return false;
+    }
     final last = _last[category];
     if (last != null &&
         at.difference(last) <
-            (rule == null ? cooldown : Duration(seconds: rule.cooldownSeconds)))
+            (rule == null
+                ? cooldown
+                : Duration(seconds: rule.cooldownSeconds))) {
       return false;
+    }
     _last[category] = at;
     acceptedSpanMs = at.difference(_candidateAt!).inMilliseconds;
     _hits = 0;

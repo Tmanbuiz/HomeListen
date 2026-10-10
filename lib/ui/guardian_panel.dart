@@ -315,9 +315,10 @@ class SpeechSessionsCard extends StatelessWidget {
                     if (agreed != true) return;
                   }
                   final error = await monitor.openSpeechSession();
-                  if (error != null && context.mounted)
+                  if (error != null && context.mounted) {
                     ScaffoldMessenger.of(context)
                         .showSnackBar(SnackBar(content: Text(error)));
+                  }
                 },
           icon: const Icon(Icons.open_in_new),
           label: const Text('Open Oralyvo'),

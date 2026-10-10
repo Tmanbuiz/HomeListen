@@ -736,9 +736,10 @@ class _ActivityState extends State<_Activity> {
           OutlinedButton.icon(
             onPressed: () async {
               final message = await monitor.exportEventFile();
-              if (context.mounted)
+              if (context.mounted) {
                 ScaffoldMessenger.of(context)
                     .showSnackBar(SnackBar(content: Text(message)));
+              }
             },
             icon: const Icon(Icons.download_outlined),
             label: const Text('Export event history'),
@@ -1482,9 +1483,10 @@ class _ConnectedDevicesState extends State<_ConnectedDevices> {
       role == 'guest' ? DateTime.now().add(Duration(hours: hours)) : null,
     );
     if (!mounted) return;
-    if (error != null)
+    if (error != null) {
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text(error)));
+    }
     await _load();
   }
 

@@ -65,12 +65,12 @@ class ActivityEvent {
     'title': title,
     'room': room,
     'at': at.toIso8601String(),
-    if (id != null) 'id': id!,
+    'id': ?id,
     if (id != null) 'schemaVersion': 2,
-    if (category != null) 'category': category!,
-    if (modelScore != null) 'modelScore': modelScore!,
-    if (modelVersion != null) 'modelVersion': modelVersion!,
-    if (durationMs != null) 'durationMs': durationMs!,
+    'category': ?category,
+    'modelScore': ?modelScore,
+    'modelVersion': ?modelVersion,
+    'durationMs': ?durationMs,
     if (id != null) 'delivery': delivery.name,
   };
 
