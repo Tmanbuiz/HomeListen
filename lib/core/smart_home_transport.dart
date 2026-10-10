@@ -88,9 +88,7 @@ class MqttSmartHomeTransport implements SmartHomeTransport {
         final ack = _acks.remove(id);
         if (ack != null && !ack.isCompleted) ack.complete();
       });
-      _rejected = client.publishFail!.listen((
-        message,
-      ) {
+      _rejected = client.publishFail!.listen((message) {
         final ack = _acks.remove(message.variableHeader?.messageIdentifier);
         if (ack != null && !ack.isCompleted) {
           ack.completeError(StateError('Broker rejected the message.'));

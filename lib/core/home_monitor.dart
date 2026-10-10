@@ -76,7 +76,8 @@ class HomeMonitor extends ChangeNotifier {
             now,
           ),
       onCommand: (command) async {
-        if (_deviceRole != DeviceRole.home || !_smartHomeSettings.allowControls) {
+        if (_deviceRole != DeviceRole.home ||
+            !_smartHomeSettings.allowControls) {
           return;
         }
         if (command == 'stop') {
