@@ -15,6 +15,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'cloud_pairing.dart';
+import 'alert_inbox.dart';
 
 /// A refusal from the server. [code] says why when the app can act on it, e.g.
 /// `totp_required` means the authenticator code has to be asked for.
@@ -25,11 +26,27 @@ class CloudMember {
     required this.label,
     required this.joinedAt,
     required this.listening,
+    this.role = 'caregiver',
+    this.expiresAt,
   });
   final String uid;
   final String label;
   final DateTime? joinedAt;
   final bool listening;
+  final String role;
+  final DateTime? expiresAt;
+}
+
+class CloudAlertResult {
+  const CloudAlertResult({
+    required this.sent,
+    required this.registered,
+    required this.retryable,
+    this.failed = 0,
+    this.expired = false,
+  });
+  final int sent, registered, failed;
+  final bool retryable, expired;
 }
 
 /// A name for this phone, shown in the home phone's list of connected devices.
@@ -64,6 +81,7 @@ Future<void> homeListenBackgroundMessage(RemoteMessage message) async {
   if (Firebase.apps.isEmpty && raw != null) {
     await Firebase.initializeApp(options: _options(jsonDecode(raw)));
   }
+  await AlertInbox.save(prefs, Map<String, dynamic>.from(message.data));
 }
 
 FirebaseOptions _options(Map<String, dynamic> config) => FirebaseOptions(
@@ -109,6 +127,7 @@ class CloudConnection {
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _roomSub;
   StreamSubscription<dynamic>? _pcmSub;
   StreamSubscription<RemoteMessage>? _messages;
+  StreamSubscription<RemoteMessage>? _openedMessages;
   StreamSubscription<String>? _tokens;
   MediaStream? _stream;
   RTCPeerConnection? _anchorSender, _anchorReceiver;
@@ -121,6 +140,9 @@ class CloudConnection {
   Map<String, dynamic>? room;
   String? roomId;
   bool sharing = false, alertsEnabled = false, hearing = false, _closed = false;
+  bool _liveAudio = true, _supportsGuardian = false;
+  Map<String, Object?> _detector = {};
+  DateTime? lastPublished;
   int _epoch = 0;
   String? inviteCode;
   DateTime? inviteExpires;
@@ -132,6 +154,20 @@ class CloudConnection {
   bool get listening => _away != null;
   int get watcherCount => (room?['watchers'] as Map?)?.length ?? 0;
   bool get paired => roomId != null && !home;
+  bool get liveAvailable {
+    if (room?['audioAvailable'] == false) return false;
+    final uid = _auth?.currentUser?.uid;
+    final access = (room?['memberAccess'] as Map?)?[uid];
+    if (access is Map) {
+      if (access['role'] == 'alerts') return false;
+      final expiry = access['expiresAtMs'];
+      if (expiry is num && expiry <= DateTime.now().millisecondsSinceEpoch) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   bool get online =>
       room?['sharing'] == true &&
       DateTime.now().millisecondsSinceEpoch -
@@ -153,6 +189,7 @@ class CloudConnection {
         .get(Uri.parse('$origin/api/config'))
         .timeout(const Duration(seconds: 15));
     final data = jsonDecode(response.body) as Map<String, dynamic>;
+    _supportsGuardian = (data['features'] as Map?)?['guardian'] == true;
     if (response.statusCode != 200) {
       throw StateError(data['error'] ?? 'The cloud server is not ready.');
     }
@@ -180,24 +217,41 @@ class CloudConnection {
     if (_auth!.currentUser == null) await _auth!.signInAnonymously();
     if (_closed) return;
     FirebaseMessaging.onBackgroundMessage(homeListenBackgroundMessage);
-    _messages = FirebaseMessaging.onMessage.listen((message) {
-      if (message.data['roomId'] == roomId &&
-          DateTime.now().millisecondsSinceEpoch -
-                  (int.tryParse(message.data['sentAt'] ?? '') ?? 0) <
-              120000) {
-        onAlert(Map<String, dynamic>.from(message.data));
-      }
-    });
     roomId = prefs.getString(home ? 'cloud_home_room' : 'cloud_paired_room');
+    Future<void> receive(RemoteMessage message) async {
+      final data = Map<String, dynamic>.from(message.data);
+      if (_closed ||
+          home ||
+          AlertInbox.parse(data, roomId, DateTime.now()) == null) {
+        return;
+      }
+      await AlertInbox.save(prefs, data);
+      if (!_closed) onAlert(data);
+    }
+
+    _messages = FirebaseMessaging.onMessage.listen(
+      (m) => unawaited(receive(m)),
+    );
+    _openedMessages = FirebaseMessaging.onMessageOpenedApp.listen(
+      (m) => unawaited(receive(m)),
+    );
+    final initial = await FirebaseMessaging.instance.getInitialMessage();
+    if (initial != null) await receive(initial);
     alertsEnabled =
         !home &&
         roomId != null &&
         prefs.getBool('cloud_alerts_enabled') == true;
     if (roomId != null) _watchRoom();
     _lease = Timer.periodic(const Duration(seconds: 10), (_) {
-      if (!home && !online && _away != null) {
+      if (!home && (!online || !liveAvailable) && _away != null) {
         unawaited(stopAway(disableAlerts: false));
         onProblem('The home phone went offline or stopped sharing.');
+      }
+      if (home && sharing && room != null) {
+        final ids = _authorizedSessions(room!);
+        for (final id in _peers.keys.toList()) {
+          if (!ids.contains(id)) _dropHomePeer(id);
+        }
       }
     });
     _tokens = FirebaseMessaging.instance.onTokenRefresh.listen((token) {
@@ -311,12 +365,23 @@ class CloudConnection {
               ? DateTime.fromMillisecondsSinceEpoch(m['joinedAtMs'] as int)
               : null,
           listening: m['listening'] == true,
+          role: m['role'] as String? ?? 'caregiver',
+          expiresAt: m['expiresAtMs'] is int
+              ? DateTime.fromMillisecondsSinceEpoch(m['expiresAtMs'] as int)
+              : null,
         ),
     ];
   }
 
   Future<void> revokeMember(String uid) =>
       api('/rooms/$roomId/revoke-member', {'uid': uid});
+
+  Future<void> setMemberAccess(String uid, String role, DateTime? expiresAt) =>
+      api('/rooms/$roomId/member-access', {
+        'uid': uid,
+        'role': role,
+        'expiresAtMs': expiresAt?.millisecondsSinceEpoch,
+      });
 
   /// The secret question (a reminder) and whether an answer is set.
   Future<({String? question, bool hasAnswer})> answerInfo() async {
@@ -355,10 +420,7 @@ class CloudConnection {
       }
       room = data;
       if (home && sharing) {
-        final active = Map<String, dynamic>.from(
-          data['activeSessions'] as Map? ?? {},
-        );
-        final ids = active.values.whereType<String>().toSet();
+        final ids = _authorizedSessions(data);
         for (final id in _offers.keys.toList()) {
           if (!ids.contains(id)) {
             unawaited(_offers.remove(id)?.cancel());
@@ -398,11 +460,32 @@ class CloudConnection {
     onChanged();
   }
 
+  Set<String> _authorizedSessions(Map<String, dynamic> data) {
+    if (data['audioAvailable'] == false) return {};
+    final active = data['activeSessions'] as Map? ?? {};
+    final access = data['memberAccess'] as Map? ?? {};
+    return {
+      for (final entry in active.entries)
+        if (entry.value is String &&
+            (data['members'] as Map?)?[entry.key] == true &&
+            !(access[entry.key] is Map &&
+                ((access[entry.key] as Map)['role'] == 'alerts' ||
+                    ((access[entry.key] as Map)['expiresAtMs'] is num &&
+                        (access[entry.key] as Map)['expiresAtMs'] <=
+                            DateTime.now().millisecondsSinceEpoch))))
+          entry.value as String,
+    };
+  }
+
+  Future<void> refreshHome() => _publish(sharing);
+
   void health(String name, int? battery, bool? charging) {
     _name = name;
     _battery = battery;
     _charging = charging;
   }
+
+  void detectorHealth(Map<String, Object?> value) => _detector = value;
 
   Future<void> _publish(bool value) {
     if (!home || roomId == null) return Future<void>.value();
@@ -412,7 +495,10 @@ class CloudConnection {
         'roomName': _name,
         'battery': _battery,
         'charging': _charging,
+        'audioAvailable': value && _liveAudio,
+        'detector': _detector,
       });
+      lastPublished = DateTime.now();
     });
     _stateTail = next.catchError((Object _) {});
     return next;
@@ -425,6 +511,7 @@ class CloudConnection {
       );
     }
     final epoch = ++_epoch;
+    _liveAudio = true;
     await ensureReady();
     if (roomId == null) await createHome();
     if (epoch != _epoch || _closed) return;
@@ -487,6 +574,38 @@ class CloudConnection {
     sharing = true;
     await _publish(true);
     _watchRoom();
+    _startHeartbeat();
+    onChanged();
+  }
+
+  /// Publishes event-monitoring availability without opening WebRTC capture.
+  /// The caller owns the local recorder and its visible foreground service.
+  Future<void> startGuardian() async {
+    final epoch = ++_epoch;
+    await ensureReady();
+    if (!_supportsGuardian) {
+      throw StateError(
+        'Update the Home Listen backend for remote Guardian alerts. Local monitoring continues.',
+      );
+    }
+    if (roomId == null) await createHome();
+    if (epoch != _epoch || _closed) return;
+    _liveAudio = false;
+    sharing = true;
+    try {
+      await _publish(true);
+    } catch (_) {
+      sharing = false;
+      rethrow;
+    }
+    if (epoch != _epoch || _closed) return;
+    _watchRoom();
+    _startHeartbeat();
+    onChanged();
+  }
+
+  void _startHeartbeat() {
+    _heartbeat?.cancel();
     _heartbeat = Timer.periodic(const Duration(seconds: 60), (_) {
       if (sharing) {
         unawaited(
@@ -498,7 +617,6 @@ class CloudConnection {
         );
       }
     });
-    onChanged();
   }
 
   /// Appends "-anchor" to every occurrence of each track id in [sdp].
@@ -785,21 +903,35 @@ class CloudConnection {
   }
 
   Future<int> sendAlert(String title) async {
+    return (await sendAlertDetailed(title)).sent;
+  }
+
+  Future<CloudAlertResult> sendAlertDetailed(
+    String title, {
+    String? eventId,
+  }) async {
     final kind = title.toLowerCase().contains('cry')
         ? 'crying'
-        : title.toLowerCase().contains('bark')
+        : title.toLowerCase().contains('bark') ||
+              title.toLowerCase().contains('dog')
         ? 'barking'
         : title.toLowerCase().contains('knock')
         ? 'knocking'
         : title.toLowerCase().contains('test')
         ? 'test'
         : 'loud';
-    if (!sharing) return 0;
+    if (!sharing) throw StateError('Start monitoring before sending alerts.');
     final result = await api('/rooms/$roomId/alerts', {
       'kind': kind,
-      'id': _db!.collection('eventIds').doc().id,
+      'id': eventId ?? _db!.collection('eventIds').doc().id,
     });
-    return result['sent'] as int? ?? 0;
+    return CloudAlertResult(
+      sent: result['sent'] as int? ?? 0,
+      registered: result['registered'] as int? ?? 0,
+      failed: result['failed'] as int? ?? 0,
+      retryable: result['retryable'] == true,
+      expired: result['expired'] == true,
+    );
   }
 
   Future<void> revoke() async {
@@ -923,6 +1055,7 @@ class CloudConnection {
     _closed = true;
     await _roomSub?.cancel();
     await _messages?.cancel();
+    await _openedMessages?.cancel();
     await _tokens?.cancel();
     _lease?.cancel();
     _client.close();

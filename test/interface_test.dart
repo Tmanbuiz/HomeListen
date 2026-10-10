@@ -4,6 +4,44 @@ import 'package:home_listen/main.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  testWidgets('Guardian controls fit a small home phone with enlarged text', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({
+      'device_role': 'home',
+      'connection_mode': 'tailscale',
+    });
+    final prefs = await SharedPreferences.getInstance();
+    tester.view.physicalSize = const Size(360, 780);
+    tester.view.devicePixelRatio = 1;
+    tester.platformDispatcher.textScaleFactorTestValue = 1.3;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    await tester.pumpWidget(HomeListenApp(prefs: prefs));
+    expect(find.text('Share this room'), findsWidgets);
+    expect(find.text('Guard this room'), findsNothing);
+    await tester.tap(find.text('Guardian').first);
+    await tester.pumpAndSettle();
+    expect(find.text('Guard this room'), findsOneWidget);
+    expect(prefs.getBool('guardian_only'), isTrue);
+    expect(tester.takeException(), isNull);
+    for (final label in ['Activity', 'Settings']) {
+      await tester.tap(
+        find.descendant(
+          of: find.byType(NavigationBar),
+          matching: find.text(label),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    }
+    await tester.scrollUntilVisible(find.text('Guardian rules'), 250);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+  });
   testWidgets(
     'setup and all navigation tabs fit a small phone with enlarged text',
     (tester) async {

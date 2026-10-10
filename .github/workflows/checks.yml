@@ -38,6 +38,7 @@ jobs:
           WRANGLER_SEND_METRICS: false
   android:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -48,14 +49,18 @@ jobs:
         with:
           flutter-version: 3.47.6
           cache: true
+      - uses: gradle/actions/setup-gradle@v4
       - run: python3 tool/fetch_sound_model.py
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
-      - run: flutter build apk --release --split-per-abi
-      - run: ./gradlew :app:testDebugUnitTest
-        working-directory: android
+      # Build the ARM64 APK first; it covers current Android phones and avoids
+      # compiling three native ABIs before there is an installable artifact.
+      - run: flutter build apk --release --target-platform android-arm64 --split-per-abi
       - uses: actions/upload-artifact@v4
         with:
           name: homelisten-android-apks
           path: build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: error
+      - run: ./gradlew :app:testDebugUnitTest
+        working-directory: android

@@ -4,6 +4,7 @@ import { getAuth, signInAnonymously } from "firebase/auth";
 import { getFirestore, doc, collection, onSnapshot, updateDoc, addDoc, Timestamp } from "firebase/firestore";
 import { parsePairing } from "./pairing.js";
 import { AudioSession } from "./audio-session.js";
+import { memberAccess, canListen } from "./access.js";
 
 const el = (id) => document.getElementById(id);
 const storageKey = "homelisten-room-v2";
@@ -41,11 +42,17 @@ async function api(path, data = undefined, method = "POST") {
 function sharing() { return room?.sharing === true && Date.now() - room.lastSeenMs < 120_000; }
 function renderRoom() {
   if (!room) return;
+  if (!memberAccess(room, auth.currentUser.uid)) {
+    revoke('Your access expired. Ask the home phone owner to renew it.');
+    return;
+  }
   const live = sharing();
+  const audioAllowed = canListen(room, auth.currentUser.uid);
   el("room-name").textContent = room.roomName;
-  el("sharing-status").textContent = live ? "Sharing on" : "Sharing off";
+  el("sharing-status").textContent = !live ? "Monitoring off" :
+    room.audioAvailable === false ? "Guardian on · live audio off" : "Sharing on";
   el("sharing-status").classList.toggle("live", live);
-  el("listen-button").disabled = !live || Boolean(session) || starting;
+  el("listen-button").disabled = !audioAllowed || Boolean(session) || starting;
   el("stop-button").disabled = !session && !starting;
   el("battery").textContent = "Home battery: " + (live && room.battery != null
     ? room.battery + "%" + (room.charging ? " · charging" : "") : "—");
@@ -54,7 +61,7 @@ function renderRoom() {
   el("alerts-status").textContent = alertsEnabled
     ? "Alerts are enabled. Sound Watch must be on at home."
     : "Get a notification when the home phone detects a selected sound.";
-  if (!live && session) void stopListening("Sharing stopped or the home phone went offline.");
+  if (!audioAllowed && session) void stopListening("Live listening is unavailable. Guardian alerts can remain enabled.");
 }
 async function watchRoom(id) {
   await stopListening();
@@ -68,18 +75,21 @@ async function watchRoom(id) {
     if (next.members?.[auth.currentUser.uid] !== true) { revoke(); return; }
     room = next;
     renderRoom();
-    message(sharing() ? "Your home phone is ready. Choose when to listen." : "Turn sharing on at the home phone to listen.");
+    if (!roomId) return;
+    message(!sharing() ? "Start monitoring on the home phone." :
+      canListen(room, auth.currentUser.uid) ? "Your home phone is ready. Choose when to listen." :
+      "Live audio is off for this phone. Enable alerts to receive selected sound notifications.");
   }, () => revoke());
   clearInterval(leaseTimer);
   leaseTimer = setInterval(renderRoom, 10_000);
 }
-function revoke() {
+function revoke(reason = "Pairing was removed or changed. Show a new code at home.") {
   void stopListening("This phone is no longer paired.");
   roomUnsubscribe?.(); roomUnsubscribe = null;
   clearInterval(leaseTimer); room = null; roomId = null;
   localStorage.removeItem(storageKey);
   el("home-panel").hidden = true; el("pair-panel").hidden = false;
-  message("Pairing was removed or changed. Show a new code at home.", true);
+  message(reason, true);
 }
 function browserName() {
   const ua = navigator.userAgent;
@@ -109,7 +119,7 @@ function signaling(id) {
   };
 }
 async function startListening() {
-  if (!sharing() || session || starting) return;
+  if (!canListen(room, auth.currentUser.uid) || session || starting) return;
   starting = true; renderRoom();
   el("audio-status").textContent = "Connecting to your room…";
   const current = new AudioSession({
@@ -141,7 +151,7 @@ async function stopListening(reason = "Listening stopped.") {
   document.querySelector(".sound-orb").classList.remove("playing");
   el("play-button").hidden = true;
   el("audio-status").textContent = reason;
-  el("listen-button").disabled = !sharing(); el("stop-button").disabled = true;
+  el("listen-button").disabled = !canListen(room, auth?.currentUser?.uid); el("stop-button").disabled = true;
   await current?.stop();
 }
 function vapidBytes(value) {

@@ -6,6 +6,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 
+import 'guardian_settings.dart';
+
 /// A duration gate with per-category cooldowns. Scores are model outputs, not
 /// calibrated probabilities; alerts deliberately say "Possible".
 ///
@@ -23,27 +25,45 @@ class SoundGate {
   final Duration cooldown;
   final Set<String> immediate;
   final Map<String, DateTime> _last = {};
+  Map<String, SoundRule> rules = {};
+  DateTime? _candidateAt;
   String? _candidate;
   int _hits = 0;
+  int acceptedSpanMs = 0;
 
   bool accept(String? category, DateTime at) {
     if (category == null) {
       reset();
       return false;
     }
+    if (category != _candidate) _candidateAt = at;
     _hits = category == _candidate ? _hits + 1 : 1;
     _candidate = category;
     final needed = immediate.contains(category) ? 1 : requiredHits;
     if (_hits < needed) return false;
+    final rule = rules[category];
+    if (rule != null &&
+        at.difference(_candidateAt!) < Duration(seconds: rule.minimumSeconds)) {
+      return false;
+    }
     final last = _last[category];
-    if (last != null && at.difference(last) < cooldown) return false;
+    if (last != null &&
+        at.difference(last) <
+            (rule == null
+                ? cooldown
+                : Duration(seconds: rule.cooldownSeconds))) {
+      return false;
+    }
     _last[category] = at;
+    acceptedSpanMs = at.difference(_candidateAt!).inMilliseconds;
     _hits = 0;
+    _candidateAt = at;
     return true;
   }
 
   void reset() {
     _candidate = null;
+    _candidateAt = null;
     _hits = 0;
   }
 }
@@ -65,7 +85,12 @@ const Map<String, Set<String>> soundGroups = {
 const double loudFloor = 0.15;
 
 class SoundVerdict {
-  const SoundVerdict(this.category, this.heard, this.heardScore);
+  const SoundVerdict(
+    this.category,
+    this.heard,
+    this.heardScore, [
+    this.categoryScore,
+  ]);
 
   /// The alert category that fired, or null.
   final String? category;
@@ -73,6 +98,20 @@ class SoundVerdict {
   /// The single best class in the window, for showing what the detector hears.
   final String heard;
   final double heardScore;
+  final double? categoryScore;
+}
+
+class SoundDetection {
+  const SoundDetection(this.category, this.at, this.score, this.durationMs);
+  final String category;
+  final DateTime at;
+  final double? score;
+  final int durationMs;
+  String get title => switch (category) {
+    'barking' => 'Possible dog sound',
+    'knocking' => 'Possible knock or doorbell',
+    _ => 'Possible $category',
+  };
 }
 
 class SoundWatch {
@@ -95,6 +134,7 @@ class SoundWatch {
   int _generation = 0;
   double _windowPeak = 0;
   bool enabled = false;
+  Map<String, SoundRule> rules = {};
   double sensitivity = 0.4;
   final Set<String> categories = {
     'crying',
@@ -137,6 +177,7 @@ class SoundWatch {
   }
 
   void Function(String title)? onEvent;
+  void Function(SoundDetection event)? onDetection;
   void Function()? onHeard;
   void Function(double noiseFloor)? onCalibrated;
   void Function(String reason)? onError;
@@ -238,6 +279,7 @@ class SoundWatch {
     required double sensitivity,
     required double peak,
     required double noiseFloor,
+    Map<String, double>? thresholds,
   }) {
     final count = math.min(labels.length, scores.length);
     var topIndex = 0;
@@ -246,11 +288,13 @@ class SoundWatch {
     }
 
     String? category;
-    var best = sensitivity;
+    var best = -1.0;
     soundGroups.forEach((group, names) {
       if (!categories.contains(group)) return;
       for (var i = 0; i < count; i++) {
-        if (names.contains(labels[i]) && scores[i] > best) {
+        if (names.contains(labels[i]) &&
+            scores[i] > (thresholds?[group] ?? sensitivity) &&
+            scores[i] > best) {
           best = scores[i];
           category = group;
         }
@@ -258,13 +302,16 @@ class SoundWatch {
     });
     if (category == null &&
         categories.contains('loud sound') &&
-        peak > math.max(loudFloor, noiseFloor * 10)) {
+        peak >
+            math.max(loudFloor, noiseFloor * 10) *
+                ((thresholds?['loud sound'] ?? .4) / .4)) {
       category = 'loud sound';
     }
     return SoundVerdict(
       category,
       count == 0 ? '' : labels[topIndex],
       count == 0 ? 0 : scores[topIndex],
+      category == null || category == 'loud sound' ? null : best,
     );
   }
 
@@ -281,6 +328,7 @@ class SoundWatch {
         sensitivity: sensitivity,
         peak: peak,
         noiseFloor: noiseFloor,
+        thresholds: {for (final e in rules.entries) e.key: e.value.threshold},
       );
       windowsAnalysed++;
       lastError = null;
@@ -293,8 +341,16 @@ class SoundWatch {
         '${verdict.category == null ? '' : ' -> ${verdict.category}'}',
       );
       onHeard?.call();
-      if (_gate.accept(verdict.category, DateTime.now())) {
-        onEvent?.call('Possible ${verdict.category}');
+      _gate.rules = rules;
+      if (_gate.accept(verdict.category, lastWindowAt!)) {
+        final detection = SoundDetection(
+          verdict.category!,
+          lastWindowAt!,
+          verdict.categoryScore,
+          math.max(975, _gate.acceptedSpanMs + 975),
+        );
+        onDetection?.call(detection);
+        onEvent?.call(detection.title);
       }
     } catch (e) {
       if (_disposed) return;

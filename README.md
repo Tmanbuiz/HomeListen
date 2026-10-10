@@ -1,22 +1,26 @@
 # Home Listen
 
-Live sound and sound alerts from the Android phone you leave at home. Listen on another Android phone or the free iPhone Home Screen web app. Built by WianTribe.
+Guardian sound alerts and optional live sound from the Android phone you leave at home. Listen on another Android phone or the iPhone Home Screen web app. Built by WianTribe.
 
 This new repository builds on the owner's [PhoneListen](https://github.com/Tmanbuiz/PhoneListen) app, retaining its Tailscale mode and local YAMNet sound detector.
 
 ## Included
 
-- Android home app with a local **Start sharing** button, visible microphone notification and **Stop** action.
+- Android **Guardian** mode with local sound detection and live listening disabled; **Live + Guardian** retains live audio. Capture starts locally, with a visible microphone notification and **Stop** action.
 - Encrypted WebRTC live audio, anonymous Firebase identity and private Firestore signaling.
 - QR/link invitations expiring after 10 minutes, up to five paired listening phones, and revocation at home.
 - Optional second way in: a pairing link joins, or so does the home secret answer plus a 6-digit code from an authenticator app (Google/Microsoft Authenticator, Authy), with no link. The answer finds the home, the code proves it is you. Codes are single-use, and five wrong codes lock that way in for 10 minutes. Turn it on in Devices on the home phone; turning it off needs a code. A leaked link alone still joins, so keep links private.
-- Local detection of possible crying, barking, knocking and loud sounds. Only alert text reaches the backend; no audio recordings are saved.
+- Local detection of possible crying, dog sounds, knocks/doorbells and loud sounds, with per-category rules, quiet hours and cooldowns. Only alert metadata reaches the backend; no audio recordings are saved.
+- Searchable event history, daily counts, configurable retention, JSON export and retry status. A bounded outbox retries failed push requests using stable event IDs.
+- Caregiver, alerts-only and expiring guest access, enforced by the API and Firestore rules.
 - Android FCM and iPhone Home Screen Web Push, including alerts without a live audio connection.
 - Cloudflare Worker API and web listener on one HTTPS address.
 - Optional Tailscale mode for native Android/iOS listening.
 - Automated API, listener, rules, Flutter interface and protocol checks; GitHub Actions produces Android APK artifacts.
 
 Credentials are blank. Follow [SETUP.md](SETUP.md) to deploy your server and enter its address in the app.
+
+See [Android Guardian](docs/ANDROID_GUARDIAN.md) for the 2.1.0 upgrade order, feature details, Oralyvo browser entry point and physical-device checks.
 
 ## Can it run for free?
 
@@ -50,10 +54,10 @@ Primary sources, checked 8 October 2026:
 1. Deploy using [SETUP.md](SETUP.md).
 2. Install the Android APK on the home phone. Choose **This phone stays at home**.
 3. In **Settings → Configure connection**, choose Cloud and enter the HTTPS Worker address.
-4. In Devices, show the pairing code. Start microphone sharing locally.
+4. In Devices, show the pairing code. Choose Guardian or Live + Guardian and start monitoring locally.
 5. On Android away, configure the same server and scan the code. Choose listening or alerts only.
-6. On iPhone, add the server page to the Home Screen first. Open its icon, paste a fresh pairing link, then choose **Listen live** and/or **Enable alerts**.
-7. Enable Sound Watch at home and send a test alert there.
+6. On iPhone, add the server page to the Home Screen first. Open its icon, paste a fresh pairing link, then choose **Enable alerts**. **Listen live** is available when the home phone is in Live + Guardian and your access permits it.
+7. Select sound categories and rules at home, then send a test alert there.
 
 Sharing never starts from a push, restart or remote request. Stop at home closes capture and peers. Revocation removes access to signaling and future alerts.
 
@@ -86,7 +90,7 @@ The final backend command is a deployment dry run. For local preview, build view
 
 ## Audio and access
 
-Android opens one WebRTC microphone track. A Kotlin sample tap feeds that track's mono 16 kHz PCM to the local classifier. A muted peer pair inside the home phone keeps native capture active during alerts-only use. It has no ICE servers and never plays audio.
+Guardian captures mono 16 kHz PCM locally with the Android recorder and creates no WebRTC microphone track. Live + Guardian opens one WebRTC microphone track; a Kotlin sample tap feeds its mono 16 kHz PCM to the local classifier. A muted peer pair inside the home phone keeps this live-mode capture active with no listeners. It has no ICE servers and never plays audio.
 
 Each viewer has one current session, replaced on reconnect and expiring after two hours. Native Android reconnects while listening remains enabled; Stop cancels recovery. The web app asks for another tap after a failed or expired session.
 

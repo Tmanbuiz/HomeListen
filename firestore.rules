@@ -3,16 +3,25 @@ service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null; }
     function room(id) { return get(/databases/$(database)/documents/rooms/$(id)).data; }
+    function currentAccess(id, uid) {
+      let access = room(id).get('memberAccess', {}).get(uid, {});
+      return access.get('expiresAtMs', null) == null ||
+        request.time.toMillis() < access.expiresAtMs;
+    }
+    function audioAccess(id, uid) {
+      return room(id).get('audioAvailable', true) && currentAccess(id, uid) &&
+        room(id).get('memberAccess', {}).get(uid, {}).get('role', 'caregiver') != 'alerts';
+    }
     function member(id) {
       return signedIn() && (room(id).ownerUid == request.auth.uid ||
-        room(id).members.get(request.auth.uid, false) == true);
+        (room(id).members.get(request.auth.uid, false) == true && currentAccess(id, request.auth.uid)));
     }
     function session(id, sid) {
       return get(/databases/$(database)/documents/rooms/$(id)/sessions/$(sid)).data;
     }
     function participant(id, sid) {
       let data = session(id, sid);
-      return member(id) && !data.ended && request.time < data.expiresAt &&
+      return member(id) && audioAccess(id, data.viewerUid) && !data.ended && request.time < data.expiresAt &&
         room(id).sharing && data.generation == room(id).generation &&
         room(id).activeSessions.get(data.viewerUid, '') == sid &&
         (data.ownerUid == request.auth.uid || data.viewerUid == request.auth.uid);
@@ -22,7 +31,7 @@ service cloud.firestore {
       allow get: if member(id);
       allow list, create, update, delete: if false;
       match /sessions/{sid} {
-        allow get: if member(id) && (resource.data.ownerUid == request.auth.uid ||
+        allow get: if member(id) && audioAccess(id, resource.data.viewerUid) && (resource.data.ownerUid == request.auth.uid ||
           resource.data.viewerUid == request.auth.uid);
         allow list: if false;
         allow create, delete: if false;
