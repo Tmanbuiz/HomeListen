@@ -12,6 +12,8 @@ import '../core/cloud_pairing.dart';
 import '../protocols/mic_monitor.dart';
 import 'design.dart';
 import 'guardian_panel.dart';
+import 'smart_home_panel.dart';
+import '../core/smart_home_settings.dart';
 
 class HomeMonitorPage extends StatefulWidget {
   const HomeMonitorPage({super.key});
@@ -1260,6 +1262,8 @@ class _Settings extends StatelessWidget {
       if (monitor.deviceRole == DeviceRole.home) ...[
         const SizedBox(height: 18),
         GuardianSettingsCard(monitor: monitor),
+        const SizedBox(height: 18),
+        SmartHomeCard(monitor: monitor),
       ],
       const SizedBox(height: 18),
       SpeechSessionsCard(monitor: monitor),
@@ -1289,7 +1293,7 @@ class _Settings extends StatelessWidget {
               onPressed: () => showLicensePage(
                 context: context,
                 applicationName: 'Home Listen',
-                applicationVersion: '2.1.0',
+                applicationVersion: homeListenVersion,
               ),
               icon: const Icon(Icons.description_outlined),
               label: const Text('Open-source licenses'),
@@ -1300,7 +1304,7 @@ class _Settings extends StatelessWidget {
       const SizedBox(height: 24),
       const Center(
         child: Text(
-          'Home Listen 2.1.0 • WianTribe',
+          'Home Listen $homeListenVersion • WianTribe',
           style: TextStyle(fontSize: 12),
         ),
       ),

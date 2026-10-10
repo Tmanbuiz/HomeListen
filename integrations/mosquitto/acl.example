@@ -1,0 +1,32 @@
+# Replace DEVICE_ID with the 24-character identifier shown on the home phone.
+# Match these usernames to the accounts in your Mosquitto password file.
+user homelisten-phone
+topic write homelisten/DEVICE_ID/availability
+topic write homelisten/DEVICE_ID/state
+topic write homelisten/DEVICE_ID/events
+topic read homeassistant/status
+topic write homeassistant/event/hl_DEVICE_ID_sound/config
+# Cleanup of disabled controls also needs write permission on their config topics.
+topic write homeassistant/select/hl_DEVICE_ID_profile_control/config
+topic write homeassistant/button/hl_DEVICE_ID_stop/config
+# MQTT '+' must occupy a whole topic level, so these grants name each entity.
+topic write homeassistant/binary_sensor/hl_DEVICE_ID_monitoring/config
+topic write homeassistant/binary_sensor/hl_DEVICE_ID_microphone/config
+topic write homeassistant/binary_sensor/hl_DEVICE_ID_detector/config
+topic write homeassistant/binary_sensor/hl_DEVICE_ID_charging/config
+topic write homeassistant/sensor/hl_DEVICE_ID_battery/config
+topic write homeassistant/sensor/hl_DEVICE_ID_mode/config
+topic write homeassistant/sensor/hl_DEVICE_ID_profile/config
+# Enable these reads only if you enable household controls on the phone.
+# topic read homelisten/DEVICE_ID/command
+# topic read homelisten/DEVICE_ID/profile/set
+
+user homeassistant
+topic read homelisten/DEVICE_ID/availability
+topic read homelisten/DEVICE_ID/state
+topic read homelisten/DEVICE_ID/events
+topic read homeassistant/+/+/config
+topic write homeassistant/status
+# Optional commands must be published with retain=false.
+# topic write homelisten/DEVICE_ID/command
+# topic write homelisten/DEVICE_ID/profile/set

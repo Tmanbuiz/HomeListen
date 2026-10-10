@@ -79,10 +79,11 @@ class SoundGate {
     return true;
   }
 
-  void reset() {
+  void reset({bool clearBursts = false}) {
     _candidate = null;
     _candidateAt = null;
     _hits = 0;
+    if (clearBursts) _recent.clear();
   }
 }
 
@@ -251,7 +252,7 @@ class SoundWatch {
     _calibrationLeft = 16000 * 8;
     _calibrationTotal = 0;
     _calibrationCount = 0;
-    _gate.reset();
+    _gate.reset(clearBursts: true);
   }
 
   void feed(Int16List pcm) {
@@ -406,7 +407,7 @@ class SoundWatch {
     _generation++;
     _window.clear();
     _windowPeak = 0;
-    _gate.reset();
+    _gate.reset(clearBursts: true);
     _calibrationLeft = 0;
     lastHeard = null;
     lastHeardScore = 0;

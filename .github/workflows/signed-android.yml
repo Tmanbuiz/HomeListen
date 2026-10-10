@@ -1,0 +1,54 @@
+name: Build signed Android release
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.6
+          cache: true
+      - uses: gradle/actions/setup-gradle@v4
+      - run: python3 tool/fetch_sound_model.py
+      - run: flutter pub get
+      - run: flutter analyze && flutter test
+      - name: Load permanent signing key
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.HOME_LISTEN_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.HOME_LISTEN_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.HOME_LISTEN_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.HOME_LISTEN_KEY_PASSWORD }}
+        run: |
+          test -n "$KEYSTORE_BASE64" && test -n "$STORE_PASSWORD" && test -n "$KEY_ALIAS" && test -n "$KEY_PASSWORD"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/homelisten-release.jks"
+          chmod 600 "$RUNNER_TEMP/homelisten-release.jks"
+      - name: Build signed APK and app bundle
+        run: |
+          flutter build apk --release --target-platform android-arm64 --split-per-abi
+          flutter build appbundle --release
+        env:
+          HOME_LISTEN_REQUIRE_RELEASE_SIGNING: 'true'
+          HOME_LISTEN_KEYSTORE_FILE: ${{ runner.temp }}/homelisten-release.jks
+          HOME_LISTEN_STORE_PASSWORD: ${{ secrets.HOME_LISTEN_STORE_PASSWORD }}
+          HOME_LISTEN_KEY_ALIAS: ${{ secrets.HOME_LISTEN_KEY_ALIAS }}
+          HOME_LISTEN_KEY_PASSWORD: ${{ secrets.HOME_LISTEN_KEY_PASSWORD }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: homelisten-signed-release
+          path: |
+            build/app/outputs/flutter-apk/*.apk
+            build/app/outputs/bundle/release/*.aab
+          if-no-files-found: error
+      - name: Remove signing material
+        if: always()
+        run: rm -f "$RUNNER_TEMP/homelisten-release.jks"

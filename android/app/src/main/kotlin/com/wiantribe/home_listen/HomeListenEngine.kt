@@ -98,6 +98,20 @@ object HomeListenEngine {
                     result.error("session_unavailable", "Install a browser to open Oralyvo.", null)
                 }
             }
+            "openHomeAssistant" -> {
+                val screen = activity
+                val target = call.argument<String>("url") ?: ""
+                val uri = Uri.parse(target)
+                if (screen == null || target.length > 2048 || uri.host.isNullOrBlank() ||
+                    uri.scheme !in listOf("https", "http") || !uri.userInfo.isNullOrBlank()) {
+                    result.error("session_unavailable", "Open Home Listen and check the Home Assistant address.", null)
+                } else try {
+                    screen.startActivity(Intent(Intent.ACTION_VIEW, uri))
+                    result.success(true)
+                } catch (_: Exception) {
+                    result.error("session_unavailable", "Install a browser or open the Home Assistant companion app.", null)
+                }
+            }
             "configureFirebase" -> {
                 context.getSharedPreferences("homelisten_firebase", Context.MODE_PRIVATE).edit()
                     .putString("appId", call.argument<String>("androidAppId"))

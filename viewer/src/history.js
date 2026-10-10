@@ -13,12 +13,17 @@ export function trim(list, now = Date.now()) {
   const seen = new Set();
   const out = [];
   for (const event of [...list].sort((a, b) => b.sentAt - a.sentAt)) {
-    if (!event?.id || seen.has(event.id) || !(event.sentAt >= cutoff)) continue;
+    if (!event?.id || seen.has(event.id) || !Number.isFinite(event.sentAt) ||
+        event.sentAt > now + 30_000 || !(event.sentAt >= cutoff)) continue;
     seen.add(event.id);
     out.push(event);
     if (out.length >= MAX_EVENTS) break;
   }
   return out;
+}
+
+export function roomEvents(list, roomId) {
+  return roomId ? list.filter((event) => event.roomId === roomId) : [];
 }
 
 export function filterEvents(list, { query = "", kind = "", days = 7, now = Date.now() } = {}) {
@@ -69,11 +74,27 @@ function run(mode, work) {
     const result = work(tx.objectStore(STORE));
     tx.oncomplete = () => { db.close(); resolve(result?.result); };
     tx.onerror = () => { db.close(); reject(tx.error); };
+    tx.onabort = () => { db.close(); reject(tx.error); };
   }));
 }
 
 export async function loadAll() {
-  try { return trim((await run("readonly", (store) => store.getAll())) ?? []); } catch { return []; }
+  try {
+    return await open().then((db) => new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      const store = tx.objectStore(STORE);
+      const request = store.getAll();
+      let list = [];
+      request.onsuccess = () => {
+        list = trim(request.result);
+        const keep = new Set(list.map((event) => event.id));
+        for (const event of request.result) if (!keep.has(event.id)) store.delete(event.id);
+      };
+      tx.oncomplete = () => { db.close(); resolve(list); };
+      tx.onerror = () => { db.close(); reject(tx.error); };
+      tx.onabort = () => { db.close(); reject(tx.error); };
+    }));
+  } catch { return []; }
 }
 export async function saveEvent(event) {
   if (!event?.id) return;
@@ -82,10 +103,7 @@ export async function saveEvent(event) {
       id: String(event.id), title: String(event.title ?? "").slice(0, 80), room: String(event.room ?? "Home").slice(0, 32),
       roomId: String(event.roomId ?? ""), kind: String(event.kind ?? ""), sentAt: Number(event.sentAt) || Date.now()
     }));
-    const all = await loadAll();
-    const keep = new Set(all.map((e) => e.id));
-    const stale = ((await run("readonly", (store) => store.getAllKeys())) ?? []).filter((id) => !keep.has(id));
-    for (const id of stale) await run("readwrite", (store) => store.delete(id));
+    await loadAll();
   } catch { /* history is a convenience; alerts still show */ }
 }
 export async function clearAll() {

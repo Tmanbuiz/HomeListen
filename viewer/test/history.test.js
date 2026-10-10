@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { dailyCounts, exportJson, filterEvents, trim } from "../src/history.js";
+import { dailyCounts, exportJson, filterEvents, roomEvents, trim } from "../src/history.js";
 
 const DAY = 86_400_000;
 const NOW = new Date(2026, 9, 10, 12, 0, 0).getTime();
@@ -37,4 +37,23 @@ test("the export is metadata only", () => {
   const data = JSON.parse(exportJson([ev("a", 0)], NOW));
   assert.deepEqual(Object.keys(data.events[0]).sort(), ["at", "id", "kind", "room", "title"]);
   assert.match(data.note, /No audio/);
+});
+
+test('room, filters, counts and export describe the same selected home', () => {
+  const all = [
+    { ...ev('home-bark', 0, 'barking'), roomId: 'current' },
+    { ...ev('home-cry', 0), roomId: 'current' },
+    { ...ev('other-bark', 0, 'barking'), roomId: 'other' },
+    ev('legacy-unknown-home', 0, 'barking')
+  ];
+  const visible = filterEvents(roomEvents(all, 'current'), { kind: 'barking', now: NOW });
+  assert.deepEqual(visible.map(e => e.id), ['home-bark']);
+  assert.equal(dailyCounts(visible, 7, NOW).reduce((sum, day) => sum + day.count, 0), 1);
+  assert.deepEqual(JSON.parse(exportJson(visible, NOW)).events.map(e => e.id), ['home-bark']);
+  assert.deepEqual(roomEvents(all, ''), []);
+});
+
+test('invalid and far-future history timestamps are discarded', () => {
+  assert.deepEqual(trim([{ ...ev('future', 0), sentAt: NOW + 31_000 },
+    { ...ev('bad', 0), sentAt: NaN }, ev('okay', 0)], NOW).map(e => e.id), ['okay']);
 });

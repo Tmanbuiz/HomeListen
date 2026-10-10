@@ -13,6 +13,16 @@ class MemoryStore {
     this.docs.set(path, { data: structuredClone(data), version: String(++this.counter) });
   }
   async delete(path) { this.docs.delete(path); }
+  async expireDevice(id, uid, version) {
+    const path = `rooms/${id}/devices/${uid}`;
+    if (this.docs.get(path)?.version !== version) return false;
+    const room = this.docs.get(`rooms/${id}`);
+    if (!room) return false;
+    this.docs.delete(path);
+    delete room.data.watchers[uid];
+    room.version = String(++this.counter);
+    return true;
+  }
   async createHome(uid, id, room) {
     if (this.docs.has("owners/" + uid)) throw new HttpError(409, "conflict");
     await this.put("owners/" + uid, { roomId: id }, null);
@@ -349,6 +359,31 @@ async function alertHome(options = {}) {
   return { ...s, id, secret, alert: (eventId = 'event_retry_123456789') =>
     s.api(`/rooms/${id}/alerts`, 'home', { id: eventId, kind: 'crying' }) };
 }
+
+test('expired token response cannot erase a refreshed registration', async () => {
+  let s;
+  s = await alertHome({ sendPush: async (device) => {
+    if (device.token.startsWith('a')) {
+      const refreshed = await s.api(`/rooms/${s.id}/device`, 'away', { kind: 'fcm', token: 'n'.repeat(80) });
+      assert.equal(refreshed.status, 200);
+      return { expired: true };
+    }
+    return { sent: true };
+  } });
+  assert.equal((await s.alert()).body.retryable, true);
+  assert.equal((await s.store.get(`rooms/${s.id}/devices/away`)).data.token, 'n'.repeat(80));
+  assert.equal((await s.store.get(`rooms/${s.id}`)).data.watchers.away, true);
+  assert.equal((await s.alert()).body.sent, 1);
+});
+
+test('an unchanged expired registration clears its watcher without revoking membership', async () => {
+  const s = await alertHome({ sendPush: async () => ({ expired: true }) });
+  assert.equal((await s.alert()).body.retryable, false);
+  assert.equal(await s.store.get(`rooms/${s.id}/devices/away`), null);
+  const room = (await s.store.get(`rooms/${s.id}`)).data;
+  assert.equal(room.watchers.away, undefined);
+  assert.equal(room.members.away, true);
+});
 
 test('a failed push can retry the same event ID successfully', async () => {
   let attempts = 0;

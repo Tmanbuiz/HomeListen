@@ -5,7 +5,7 @@ import { getFirestore, doc, collection, onSnapshot, updateDoc, addDoc, Timestamp
 import { parsePairing } from "./pairing.js";
 import { AudioSession } from "./audio-session.js";
 import { memberAccess, canListen } from "./access.js";
-import { clearAll, dailyCounts, exportJson, filterEvents, loadAll, saveEvent } from "./history.js";
+import { clearAll, dailyCounts, exportJson, filterEvents, loadAll, roomEvents, saveEvent } from "./history.js";
 
 const el = (id) => document.getElementById(id);
 const storageKey = "homelisten-room-v2";
@@ -100,16 +100,18 @@ function browserName() {
 }
 // --- Sound alert history (on this phone only) --------------------------------
 let historyAll = [];
+let historyRows = [];
 async function renderHistory() {
   historyAll = await loadAll();
   const panel = el("history-panel");
   panel.hidden = !roomId;
-  if (!roomId) return;
+  if (!roomId) { historyRows = []; return; }
   const days = Number(el("history-days").value);
-  const rows = filterEvents(historyAll.filter((e) => !e.roomId || e.roomId === roomId), {
+  const rows = filterEvents(roomEvents(historyAll, roomId), {
     query: el("history-search").value, kind: el("history-kind").value, days
   });
-  const counts = dailyCounts(historyAll, Math.min(days, 14));
+  historyRows = rows;
+  const counts = dailyCounts(rows, Math.min(days, 14));
   const peak = Math.max(1, ...counts.map((c) => c.count));
   el("history-counts").replaceChildren(...counts.map((c) => {
     const bar = document.createElement("span");
@@ -132,7 +134,7 @@ async function renderHistory() {
 for (const id of ["history-search", "history-kind", "history-days"]) el(id).addEventListener("input", () => void renderHistory());
 el("history-export").addEventListener("click", () => {
   const link = document.createElement("a");
-  link.href = URL.createObjectURL(new Blob([exportJson(historyAll)], { type: "application/json" }));
+  link.href = URL.createObjectURL(new Blob([exportJson(historyRows)], { type: "application/json" }));
   link.download = "home-listen-history.json";
   link.click();
   setTimeout(() => URL.revokeObjectURL(link.href), 5000);
