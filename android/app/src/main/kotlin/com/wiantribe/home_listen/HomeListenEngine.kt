@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -36,11 +37,13 @@ object HomeListenEngine {
     private const val ENGINE_ID = "home_listen_main"
     private const val CHANNEL = "com.wiantribe.home_listen/mic_service"
     const val REQUEST_NOTIFICATIONS = 4101
+    const val REQUEST_EXPORT = 4102
 
     /** The visible screen, when there is one; permission prompts need it. */
     @Volatile var activity: Activity? = null
 
     private var pendingStart: (() -> Unit)? = null
+    private var pendingExport: Pair<String, MethodChannel.Result>? = null
 
     fun engine(context: Context): FlutterEngine {
         FlutterEngineCache.getInstance().get(ENGINE_ID)?.let { return it }
@@ -64,6 +67,37 @@ object HomeListenEngine {
 
     private fun handle(context: Context, call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
+            "exportActivity" -> {
+                val screen = activity
+                val content = call.argument<String>("content")
+                if (screen == null || content == null || content.length > 1_000_000 || pendingExport != null) {
+                    result.error("export_unavailable", "Open Home Listen and try exporting again.", null)
+                } else {
+                    pendingExport = Pair(content, result)
+                    try {
+                        screen.startActivityForResult(
+                            Intent(Intent.ACTION_CREATE_DOCUMENT)
+                                .addCategory(Intent.CATEGORY_OPENABLE)
+                                .setType("application/json")
+                                .putExtra(Intent.EXTRA_TITLE, "HomeListen-events.json"),
+                            REQUEST_EXPORT,
+                        )
+                    } catch (_: Exception) {
+                        pendingExport = null
+                        result.error("export_unavailable", "This phone cannot open a file picker.", null)
+                    }
+                }
+            }
+            "openSpeechSession" -> {
+                val screen = activity
+                if (screen == null) result.error("session_unavailable", "Open Home Listen first.", null)
+                else try {
+                    screen.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://oralyvo.app/")))
+                    result.success(true)
+                } catch (_: Exception) {
+                    result.error("session_unavailable", "Install a browser to open Oralyvo.", null)
+                }
+            }
             "configureFirebase" -> {
                 context.getSharedPreferences("homelisten_firebase", Context.MODE_PRIVATE).edit()
                     .putString("appId", call.argument<String>("androidAppId"))
@@ -159,5 +193,24 @@ object HomeListenEngine {
         // the authority on whether the notification can be seen.
         pendingStart?.invoke()
         pendingStart = null
+    }
+
+    fun onActivityResult(context: Context, requestCode: Int, resultCode: Int, intent: Intent?) {
+        if (requestCode != REQUEST_EXPORT) return
+        val pending = pendingExport ?: return
+        pendingExport = null
+        val uri = intent?.data
+        if (resultCode != Activity.RESULT_OK || uri == null) {
+            pending.second.success(false)
+            return
+        }
+        try {
+            context.contentResolver.openOutputStream(uri)?.use { stream ->
+                stream.write(pending.first.toByteArray(Charsets.UTF_8))
+            } ?: throw IllegalStateException("No output stream")
+            pending.second.success(true)
+        } catch (_: Exception) {
+            pending.second.error("export_failed", "Could not save event history to that location.", null)
+        }
     }
 }

@@ -13,13 +13,16 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../protocols/mic_monitor.dart';
 import 'activity_event.dart';
+import 'alert_outbox.dart';
+import 'alert_inbox.dart';
+import 'guardian_settings.dart';
 import 'alerts.dart';
 import 'cloud_connection.dart';
 import 'cloud_pairing.dart';
 import 'pairing.dart';
 import 'sound_watch.dart';
 
-enum MonitorRole { idle, talking, listening, watching }
+enum MonitorRole { idle, talking, listening, watching, guardian }
 
 enum DeviceRole { home, away }
 
@@ -44,6 +47,23 @@ class HomeMonitor extends ChangeNotifier {
     _events.addAll(ActivityEvent.restore(prefs?.getString('activity')));
     soundWatch.noiseFloor = prefs?.getDouble('noise_floor') ?? 0.015;
     soundWatch.sensitivity = prefs?.getDouble('sound_threshold') ?? 0.4;
+    _guardianOnly = prefs?.getBool('guardian_only') ?? true;
+    _guardianSettings = GuardianSettings.restore(
+      prefs?.getString('guardian_settings'),
+      threshold: soundWatch.sensitivity,
+    );
+    soundWatch.rules = _guardianSettings.rules;
+    _outbox.addAll(
+      PendingAlert.restore(prefs?.getString('alert_outbox'), DateTime.now()),
+    );
+    for (var i = 0; i < _events.length; i++) {
+      final event = _events[i];
+      if (event.delivery == AlertDelivery.queued &&
+          !_outbox.any((a) => a.id == event.id)) {
+        _events[i] = event.withDelivery(AlertDelivery.expired);
+      }
+    }
+    _pruneActivity();
     _reduceHiss = prefs?.getBool('reduce_hiss') ?? true;
     _homeShowsAlerts = prefs?.getBool('home_shows_alerts') ?? false;
     _autoMode = prefs?.getString('auto_mode') == 'alerts' ? 'alerts' : 'listen';
@@ -56,33 +76,50 @@ class HomeMonitor extends ChangeNotifier {
         ..clear()
         ..addAll(selected);
     }
-    soundWatch.onEvent = (title) {
+    soundWatch.onDetection = (detection) {
+      final title = detection.title;
       // The home phone already told this phone: do not say it twice.
       final told = _remoteAlertAt[title];
       if (told != null &&
           DateTime.now().difference(told) < const Duration(seconds: 15)) {
         return;
       }
-      _addEvent(ActivityKind.sound, title);
+      final quiet = _guardianSettings.suppresses(
+        detection.category,
+        detection.at,
+      );
+      final queued =
+          !quiet &&
+          _deviceRole == DeviceRole.home &&
+          cloudMode &&
+          cloudServer.isNotEmpty;
+      final event = _addEvent(
+        ActivityKind.sound,
+        title,
+        category: detection.category,
+        score: detection.score,
+        durationMs: detection.durationMs,
+        delivery: quiet
+            ? AlertDelivery.quiet
+            : queued
+            ? AlertDelivery.queued
+            : AlertDelivery.local,
+      );
+      if (quiet) {
+        _notify();
+        return;
+      }
       // On the home phone this is what reaches the phone you carry, even when
       // that phone is not playing any audio.
       _talker?.sendAlert(title, _roomName);
-      if (_cloud?.sharing == true) {
-        unawaited(
-          _cloud!
-              .sendAlert(title)
-              .then<void>(
-                (_) {},
-                onError: (Object e) {
-                  _error = 'Sound heard, but its cloud alert could not be sent. Check internet.';
-                  _notify();
-                },
-              ),
-        );
+      if (queued && event != null) {
+        _enqueueAlert(event);
       }
       // The home phone itself stays quiet unless asked: nobody is usually there
       // to read it, and one popping up in the room is only noise.
-      if (_deviceRole != DeviceRole.home || _homeShowsAlerts) {
+      if (_deviceRole != DeviceRole.home ||
+          _homeShowsAlerts ||
+          (isGuardian && !cloudAlertsReady)) {
         unawaited(
           _alerts.show(title, '$displayRoom • Tap to open Home Listen.'),
         );
@@ -96,7 +133,13 @@ class HomeMonitor extends ChangeNotifier {
       _notify();
     };
     soundWatch.onError = (reason) {
-      _error = reason;
+      _error = isGuardian
+          ? 'Guardian stopped because the sound detector failed. Open Home and start again.'
+          : reason;
+      if (isGuardian) {
+        _addEvent(ActivityKind.disconnected, 'Sound detector stopped');
+        unawaited(stop());
+      }
       _notify();
     };
     _channel.setMethodCallHandler((call) async {
@@ -118,6 +161,15 @@ class HomeMonitor extends ChangeNotifier {
   final SoundWatch soundWatch = SoundWatch();
   final PcmFramer _meterFramer = PcmFramer();
   final List<ActivityEvent> _events = [];
+  final List<PendingAlert> _outbox = [];
+  GuardianSettings _guardianSettings = GuardianSettings();
+  bool _guardianOnly = true,
+      _guardianConnecting = false,
+      _flushingAlerts = false,
+      _mergingInbox = false;
+  String? _guardianCloudProblem;
+  DateTime? _lastCaptureAt, _lastGuardianConnect;
+  Timer? _outboxTimer;
   // Growable on purpose: the meter scrolls by dropping the oldest bar. A
   // fixed-length list threw on every audio chunk, which stopped the home
   // phone's meter and, on the listening phone, ran before playback and
@@ -151,6 +203,13 @@ class HomeMonitor extends ChangeNotifier {
       return;
     }
     await stop();
+    if (mode != _connectionMode || (origin != null && origin != cloudServer)) {
+      for (final alert in _outbox) {
+        _setDelivery(alert.id, AlertDelivery.expired);
+      }
+      _outbox.clear();
+      await _saveOutbox();
+    }
     await _cloud?.close();
     _cloud = null;
     _connectionMode = mode;
@@ -193,7 +252,7 @@ class HomeMonitor extends ChangeNotifier {
     final cloud = _cloud;
     if (cloud == null || _disposed) return;
     if (_deviceRole == DeviceRole.home) {
-      if (isTalking) _talkerChanged();
+      if (isMonitoring) _talkerChanged();
     } else {
       if (cloud.online) {
         _readStatus({
@@ -280,6 +339,60 @@ class HomeMonitor extends ChangeNotifier {
   bool get needsSetup => prefs?.getString('device_role') == null;
   String? get error => _error;
   bool get isTalking => _role == MonitorRole.talking;
+  bool get isGuardian => _role == MonitorRole.guardian;
+  bool get isMonitoring => isTalking || isGuardian;
+  bool get guardianOnly => _guardianOnly;
+  GuardianSettings get guardianSettings => _guardianSettings;
+  int get queuedAlertCount => _outbox.length;
+  bool get cloudAlertsReady =>
+      _cloud?.sharing == true &&
+      _cloud?.lastPublished != null &&
+      DateTime.now().difference(_cloud!.lastPublished!) <
+          const Duration(seconds: 120);
+  bool get liveAvailable => !cloudMode || (_cloud?.liveAvailable ?? true);
+  String get guardianConnectionStatus => !cloudMode
+      ? 'Local detection · cloud alerts are not configured'
+      : cloudServer.isEmpty
+      ? 'Local detection · add a server for remote alerts'
+      : cloudAlertsReady
+      ? 'Remote alerts connected'
+      : _guardianCloudProblem ?? 'Local detection · connecting remote alerts';
+  String get captureHealth => !isMonitoring
+      ? 'Microphone off'
+      : _lastCaptureAt == null
+      ? 'Waiting for microphone samples'
+      : DateTime.now().difference(_lastCaptureAt!) > const Duration(seconds: 10)
+      ? 'Microphone feed has paused'
+      : 'Microphone samples arriving';
+  String get todaySummary {
+    final today = DateTime.now();
+    final counts = <String, int>{};
+    for (final event in events.where(
+      (e) => e.kind == ActivityKind.sound && e.category != null,
+    )) {
+      final at = event.at.toLocal();
+      if (at.year == today.year &&
+          at.month == today.month &&
+          at.day == today.day) {
+        counts.update(event.category!, (n) => n + 1, ifAbsent: () => 1);
+      }
+    }
+    return counts.isEmpty
+        ? 'No selected sounds logged today.'
+        : counts.entries
+              .map(
+                (e) => '${e.value} ${soundCategoryLabel(e.key).toLowerCase()}',
+              )
+              .join(' · ');
+  }
+
+  static String soundCategoryLabel(String name) => switch (name) {
+    'crying' => 'Crying',
+    'barking' => 'Dog sounds',
+    'knocking' => 'Knocks and doorbells',
+    'loud sound' => 'Loud sounds',
+    _ => name,
+  };
   bool get isListening => _role == MonitorRole.listening;
 
   /// Connected for alerts only: registered with the home phone, no audio.
@@ -389,6 +502,10 @@ class HomeMonitor extends ChangeNotifier {
     _healthTimer = Timer.periodic(
       const Duration(seconds: 10),
       (_) => _refreshHealth(),
+    );
+    _outboxTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => unawaited(_flushOutbox()),
     );
     unawaited(_watchTailscale());
     // Sound Watch was left switched on: bring it back. It used to start off
@@ -677,17 +794,36 @@ class HomeMonitor extends ChangeNotifier {
 
   Future<void> _refreshHealth() async {
     if (_disposed) return;
+    await _mergeInbox();
+    final before = _events.length;
+    _pruneActivity();
+    if (before != _events.length) await _saveActivity();
     try {
       _batteryLevel = await _battery.batteryLevel;
       final state = await _battery.batteryState;
       _charging = state == BatteryState.charging || state == BatteryState.full;
-      if (isTalking) _checkBattery(_batteryLevel, _charging);
+      if (isMonitoring) _checkBattery(_batteryLevel, _charging);
     } catch (_) {
       _batteryLevel = null;
       _charging = null;
     }
     _notify();
     _cloud?.health(_roomName, _batteryLevel, _charging);
+    _cloud?.detectorHealth({
+      'enabled': soundWatch.enabled,
+      'ready': soundWatch.ready,
+      'windows': soundWatch.windowsAnalysed,
+      'lastAudioMs': _lastCaptureAt?.millisecondsSinceEpoch,
+    });
+    if (isGuardian && !cloudAlertsReady) unawaited(_connectGuardian());
+    if (isMonitoring &&
+        (_lastCaptureAt ?? _sessionStarted) != null &&
+        DateTime.now().difference((_lastCaptureAt ?? _sessionStarted)!) >
+            const Duration(seconds: 15)) {
+      _error = 'Monitoring stopped because microphone samples stopped arriving. Open Home and start again.';
+      _addEvent(ActivityKind.disconnected, 'Microphone feed stopped');
+      unawaited(stop());
+    }
   }
 
   void _checkBattery(int? level, bool? charging) {
@@ -708,6 +844,10 @@ class HomeMonitor extends ChangeNotifier {
   }
 
   Future<void> startTalking() async {
+    if (_guardianOnly && _deviceRole == DeviceRole.home) {
+      await startGuardian();
+      return;
+    }
     if (cloudMode) {
       await _startCloudHome();
       return;
@@ -851,6 +991,335 @@ class HomeMonitor extends ChangeNotifier {
     }
   }
 
+  Future<void> setGuardianOnly(bool value) async {
+    if (value == _guardianOnly) return;
+    // Changing capture modes stops first; the next start always needs a local tap.
+    if (isActive || _busy) await stop();
+    _guardianOnly = value;
+    await prefs?.setBool('guardian_only', value);
+    _notify();
+  }
+
+  Future<void> startGuardian() async {
+    if (isActive || _busy || _disposed || _deviceRole != DeviceRole.home)
+      return;
+    if (!Platform.isAndroid) {
+      _error = 'Guardian monitoring uses the Android home phone.';
+      _notify();
+      return;
+    }
+    _busy = true;
+    _error = null;
+    final epoch = ++_epoch;
+    _notify();
+    try {
+      if (!await _recorder.hasPermission())
+        throw StateError('Allow microphone access to start Guardian.');
+      await setSoundEnabled(true);
+      if (!soundWatch.ready || !soundWatch.enabled)
+        throw StateError(
+          'The local sound detector must load before Guardian starts.',
+        );
+      if (epoch != _epoch || _disposed) return;
+      final shown = await _channel.invokeMethod<bool>('start', {
+        'text': 'Guardian on — local sound detection • live listening off',
+      });
+      if (shown != true)
+        throw StateError(
+          'Allow visible Home Listen notifications before starting Guardian.',
+        );
+      if (epoch != _epoch || _disposed) return;
+      final pcm = await _recorder.startStream(
+        const RecordConfig(
+          encoder: AudioEncoder.pcm16bits,
+          sampleRate: 16000,
+          numChannels: 1,
+          autoGain: false,
+          echoCancel: false,
+          noiseSuppress: false,
+        ),
+      );
+      if (epoch != _epoch || _disposed) {
+        await _teardownTalker();
+        return;
+      }
+      _meterFramer.reset();
+      _role = MonitorRole.guardian;
+      _sessionStarted = DateTime.now();
+      _lastCaptureAt = null;
+      _meterSub = pcm.listen(
+        (chunk) {
+          for (final frame in _meterFramer.add(chunk)) {
+            _processPcm(frame);
+          }
+        },
+        onError: (Object _) {
+          if (epoch != _epoch || _disposed) return;
+          _error = 'Guardian stopped because its microphone feed failed. Start again from Home.';
+          unawaited(stop());
+        },
+        onDone: () {
+          if (epoch == _epoch && !_disposed && isGuardian) {
+            _error = 'Guardian microphone feed ended. Start again from Home.';
+            unawaited(stop());
+          }
+        },
+      );
+      _addEvent(ActivityKind.session, 'Guardian started · live listening off');
+      unawaited(_connectGuardian(force: true));
+    } catch (e) {
+      await _teardownTalker();
+      if (epoch == _epoch) _error = _readableError(e);
+    } finally {
+      _busy = false;
+      _notify();
+    }
+  }
+
+  Future<void> _connectGuardian({bool force = false}) async {
+    if (!isGuardian ||
+        !cloudMode ||
+        cloudServer.isEmpty ||
+        _guardianConnecting ||
+        _disposed)
+      return;
+    final now = DateTime.now();
+    if (!force &&
+        _lastGuardianConnect != null &&
+        now.difference(_lastGuardianConnect!) < const Duration(seconds: 30))
+      return;
+    _lastGuardianConnect = now;
+    _guardianConnecting = true;
+    final epoch = _epoch;
+    try {
+      final cloud = _cloudConnection()
+        ..health(_roomName, _batteryLevel, _charging);
+      if (!cloud.sharing) {
+        await cloud.startGuardian();
+      } else {
+        await cloud.refreshHome();
+      }
+      if (epoch != _epoch || !isGuardian || _disposed) return;
+      _guardianCloudProblem = null;
+      unawaited(_flushOutbox());
+    } catch (e) {
+      if (epoch == _epoch && isGuardian) {
+        _guardianCloudProblem =
+            'Local detection continues · ${_readableError(e)}';
+      }
+    } finally {
+      _guardianConnecting = false;
+      _notify();
+    }
+  }
+
+  Future<void> _saveGuardianSettings() async {
+    await prefs?.setString('guardian_settings', _guardianSettings.encode());
+  }
+
+  Future<void> setQuietHours({bool? enabled, int? start, int? end}) async {
+    _guardianSettings = _guardianSettings.copyWith(
+      quietEnabled: enabled,
+      quietStart: start,
+      quietEnd: end,
+    );
+    await _saveGuardianSettings();
+    _notify();
+  }
+
+  Future<void> setSoundRule(String category, SoundRule rule) async {
+    if (!guardianCategories.contains(category)) return;
+    _guardianSettings = _guardianSettings.copyWith(
+      rules: {..._guardianSettings.rules, category: rule},
+    );
+    soundWatch.rules = _guardianSettings.rules;
+    soundWatch.reset();
+    await _saveGuardianSettings();
+    _notify();
+  }
+
+  Future<void> setRetentionDays(int days) async {
+    _guardianSettings = _guardianSettings.copyWith(retentionDays: days);
+    _pruneActivity();
+    await _saveGuardianSettings();
+    await _saveActivity();
+    _notify();
+  }
+
+  void _pruneActivity() {
+    final cutoff = DateTime.now().subtract(
+      Duration(days: _guardianSettings.retentionDays),
+    );
+    _events.removeWhere((e) => e.at.isBefore(cutoff));
+    if (_events.length > 500) _events.removeRange(500, _events.length);
+  }
+
+  Future<void> _saveActivity() async {
+    await prefs?.setString(
+      'activity',
+      jsonEncode(_events.map((e) => e.toJson()).toList()),
+    );
+  }
+
+  Future<void> _saveOutbox() async {
+    await prefs?.setString(
+      'alert_outbox',
+      jsonEncode(_outbox.map((a) => a.toJson()).toList()),
+    );
+  }
+
+  Future<void> _mergeInbox() async {
+    final preferences = prefs;
+    if (preferences == null || _mergingInbox) return;
+    _mergingInbox = true;
+    try {
+      final incoming = await AlertInbox.pending(preferences);
+      if (_disposed) return;
+      for (final event in incoming) {
+        if (!_events.any((e) => e.id == event.id)) _events.add(event);
+      }
+      _events.sort((a, b) => b.at.compareTo(a.at));
+      _pruneActivity();
+      if (incoming.isNotEmpty) await _saveActivity();
+      // Remove only the keys read above; another notification may have arrived.
+      for (final event in incoming) {
+        await preferences.remove('${AlertInbox.prefix}${event.id}');
+      }
+    } finally {
+      _mergingInbox = false;
+    }
+  }
+
+  String exportActivity() => jsonEncode({
+    'schemaVersion': 2,
+    'exportedAt': DateTime.now().toUtc().toIso8601String(),
+    'events': events.map((e) => e.toJson()).toList(),
+  });
+
+  Future<String> exportEventFile() async {
+    try {
+      final saved = await _channel.invokeMethod<bool>('exportActivity', {
+        'content': exportActivity(),
+      });
+      return saved == true
+          ? 'Event history saved. No audio was included.'
+          : 'Export cancelled.';
+    } catch (_) {
+      return 'Could not save event history. Try another location.';
+    }
+  }
+
+  Future<String?> openSpeechSession() async {
+    if (isMonitoring || _busy) await stop();
+    try {
+      await _channel.invokeMethod<bool>('openSpeechSession');
+      return null;
+    } catch (_) {
+      return 'Could not open Oralyvo. Open oralyvo.app in your browser.';
+    }
+  }
+
+  void _setDelivery(String id, AlertDelivery delivery) {
+    final index = _events.indexWhere((e) => e.id == id);
+    if (index < 0) return;
+    _events[index] = _events[index].withDelivery(delivery);
+    unawaited(_saveActivity());
+    _notify();
+  }
+
+  void _enqueueAlert(ActivityEvent event) {
+    if (event.id == null) return;
+    if (_outbox.length >= 50) {
+      final removed = _outbox.removeAt(0);
+      _setDelivery(removed.id, AlertDelivery.expired);
+    }
+    _outbox.add(
+      PendingAlert(
+        id: event.id!,
+        title: event.title,
+        at: event.at,
+        roomId: _cloud?.roomId,
+        origin: cloudServer,
+      ),
+    );
+    unawaited(_saveOutbox());
+    unawaited(_flushOutbox());
+  }
+
+  Future<void> retryAlerts() async {
+    if (isGuardian) await _connectGuardian(force: true);
+    await _flushOutbox(force: true);
+  }
+
+  Future<void> _flushOutbox({bool force = false}) async {
+    if (_disposed || _flushingAlerts) return;
+    _flushingAlerts = true;
+    try {
+      final now = DateTime.now();
+      for (final alert in _outbox.toList()) {
+        if (alert.expired(now)) {
+          _outbox.remove(alert);
+          _setDelivery(alert.id, AlertDelivery.expired);
+        }
+      }
+      final cloud = _cloud;
+      if (!isMonitoring || !cloudMode || cloud?.sharing != true) return;
+      // Send sequentially so the server's event grouping limit can settle.
+      for (final alert in _outbox.toList()) {
+        if (_disposed || !isMonitoring || !cloud!.sharing) break;
+        if (!force && !alert.due(DateTime.now())) continue;
+        if ((alert.roomId != null && alert.roomId != cloud.roomId) ||
+            (alert.origin != null && alert.origin != cloudServer)) {
+          _outbox.remove(alert);
+          _setDelivery(alert.id, AlertDelivery.expired);
+          continue;
+        }
+        try {
+          final result = await cloud.sendAlertDetailed(
+            alert.title,
+            eventId: alert.id,
+          );
+          if (!_outbox.contains(alert)) continue;
+          _outbox.remove(alert);
+          if (result.retryable) {
+            _outbox.add(alert.retry(DateTime.now()));
+          } else {
+            _setDelivery(
+              alert.id,
+              result.expired
+                  ? AlertDelivery.expired
+                  : result.sent > 0
+                  ? AlertDelivery.submitted
+                  : result.registered == 0
+                  ? AlertDelivery.noRecipients
+                  : AlertDelivery.failed,
+            );
+          }
+        } catch (_) {
+          if (_outbox.remove(alert)) _outbox.add(alert.retry(DateTime.now()));
+        }
+        await _saveOutbox();
+      }
+    } finally {
+      await _saveOutbox();
+      _flushingAlerts = false;
+      _notify();
+    }
+  }
+
+  Future<String?> setDeviceAccess(
+    String uid,
+    String role,
+    DateTime? expiresAt,
+  ) async {
+    try {
+      await _cloudConnection().setMemberAccess(uid, role, expiresAt);
+      return null;
+    } catch (e) {
+      return _readableError(e);
+    }
+  }
+
   Future<void> _startCloudAway({
     required bool alertsOnly,
     bool quiet = false,
@@ -866,7 +1335,9 @@ class HomeMonitor extends ChangeNotifier {
     try {
       final cloud = _cloudConnection();
       await cloud.ensureReady();
-      if (alertsOnly) {
+      final onlyAlerts = alertsOnly || !cloud.liveAvailable;
+      _wantAlertsOnly = onlyAlerts;
+      if (onlyAlerts) {
         _notificationsAllowed = await _alerts.requestPermission();
         await cloud.enableAlerts();
       } else {
@@ -889,12 +1360,12 @@ class HomeMonitor extends ChangeNotifier {
         await cloud.stopAway();
         return;
       }
-      _role = alertsOnly ? MonitorRole.watching : MonitorRole.listening;
+      _role = onlyAlerts ? MonitorRole.watching : MonitorRole.listening;
       _sessionStarted = DateTime.now();
       _error = null;
       _addEvent(
         ActivityKind.connected,
-        alertsOnly
+        onlyAlerts
             ? 'Cloud sound alerts enabled'
             : 'Connecting to live home audio',
       );
@@ -917,11 +1388,13 @@ class HomeMonitor extends ChangeNotifier {
       unawaited(
         _channel
             .invokeMethod<void>('update', {
-              'text': notificationText(
-                hasListener: talkerHasListener,
-                listeners: talkerListenerCount,
-                watchers: talkerWatcherCount,
-              ),
+              'text': isGuardian
+                  ? 'Guardian on — local sound detection • live listening off'
+                  : notificationText(
+                      hasListener: talkerHasListener,
+                      listeners: talkerListenerCount,
+                      watchers: talkerWatcherCount,
+                    ),
             })
             .catchError((_) {}),
       );
@@ -1014,16 +1487,19 @@ class HomeMonitor extends ChangeNotifier {
   /// real alert takes. On any phone it also posts a local notification, which
   /// proves that notifications are allowed there.
   Future<String> sendTestAlert() async {
-    if (cloudMode && _deviceRole == DeviceRole.home) {
-      if (!isTalking) return 'Start sharing before sending a cloud test alert.';
-      try {
-        final sent = await _cloudConnection().sendAlert('Test alert');
-        return 'Sent to $sent phone(s). Enable alerts on a paired listening phone if none arrived.';
-      } catch (e) {
-        return _readableError(e);
-      }
+    if (cloudMode && cloudServer.isNotEmpty && _deviceRole == DeviceRole.home) {
+      if (!isMonitoring)
+        return 'Start Guardian or sharing before sending a test alert.';
+      final event = _addEvent(
+        ActivityKind.sound,
+        'Test alert',
+        delivery: AlertDelivery.queued,
+      );
+      if (event != null) _enqueueAlert(event);
+      _notify();
+      return 'Test alert saved. Activity shows whether the push provider accepted it or a retry is waiting.';
     }
-    if (_deviceRole == DeviceRole.home && !_homeShowsAlerts) {
+    if (_deviceRole == DeviceRole.home && !_homeShowsAlerts && !isGuardian) {
       // Nothing is shown here; the test goes only to connected phones.
       final sent = _talker?.sendAlert('Test alert', _roomName) ?? 0;
       _addEvent(ActivityKind.sound, 'Test alert sent');
@@ -1049,6 +1525,10 @@ class HomeMonitor extends ChangeNotifier {
     );
     _addEvent(ActivityKind.sound, 'Test alert');
     if (_deviceRole == DeviceRole.home) {
+      if (isGuardian) {
+        _notify();
+        return 'A local test notification was shown. Configure a cloud server and pair another phone to test remote Guardian alerts.';
+      }
       final sent = _talker?.sendAlert('Test alert', _roomName) ?? 0;
       _notify();
       if (!isTalking) {
@@ -1082,7 +1562,16 @@ class HomeMonitor extends ChangeNotifier {
         ? (alert['room'] as String)
         : displayRoom;
     _remoteAlertAt[title] = DateTime.now();
-    _addEvent(ActivityKind.sound, title);
+    final id = alert['id'] is String ? alert['id'] as String : null;
+    if (id != null && _events.any((e) => e.id == id)) return;
+    _addEvent(
+      ActivityKind.sound,
+      title,
+      id: id,
+      room: room,
+      category: alert['kind'] is String ? alert['kind'] : null,
+      delivery: AlertDelivery.received,
+    );
     unawaited(_alerts.show(title, '$room • Tap to open Home Listen.'));
     _notify();
   }
@@ -1236,6 +1725,7 @@ class HomeMonitor extends ChangeNotifier {
 
   void _processPcm(Int16List pcm) {
     if (_disposed) return;
+    _lastCaptureAt = DateTime.now();
     soundWatch.feed(pcm);
     var sum = 0.0;
     for (final v in pcm) {
@@ -1284,7 +1774,9 @@ class HomeMonitor extends ChangeNotifier {
   /// race with the app starting up.
   Future<void> _ensureSoundWatch() async {
     if (_disposed || _soundLoading) return;
-    if (prefs?.getBool('sound_enabled') != true) return;
+    if (prefs?.getBool('sound_enabled') != true &&
+        _deviceRole != DeviceRole.home)
+      return;
     if (soundWatch.enabled && soundWatch.ready) return;
     debugPrint('sound watch: restoring after session start');
     await setSoundEnabled(true);
@@ -1293,6 +1785,7 @@ class HomeMonitor extends ChangeNotifier {
   Future<void> setSoundEnabled(bool value) async {
     if (_soundLoading) return;
     if (!value) {
+      if (isGuardian) await stop();
       soundWatch.enabled = false;
       soundWatch.reset();
       await prefs?.setBool('sound_enabled', false);
@@ -1327,6 +1820,14 @@ class HomeMonitor extends ChangeNotifier {
   Future<void> setSoundThreshold(double value) async {
     soundWatch.sensitivity = value.clamp(0.2, 0.85);
     await prefs?.setDouble('sound_threshold', soundWatch.sensitivity);
+    _guardianSettings = _guardianSettings.copyWith(
+      rules: {
+        for (final e in _guardianSettings.rules.entries)
+          e.key: e.value.copyWith(threshold: soundWatch.sensitivity),
+      },
+    );
+    soundWatch.rules = _guardianSettings.rules;
+    await _saveGuardianSettings();
     _notify();
   }
 
@@ -1351,26 +1852,43 @@ class HomeMonitor extends ChangeNotifier {
     }
   }
 
-  void _addEvent(ActivityKind kind, String title) {
-    if (_disposed) return;
-    _events.insert(
-      0,
-      ActivityEvent(
-        kind: kind,
-        title: title,
-        room: displayRoom,
-        at: DateTime.now(),
-      ),
+  ActivityEvent? _addEvent(
+    ActivityKind kind,
+    String title, {
+    String? id,
+    String? category,
+    double? score,
+    int? durationMs,
+    AlertDelivery delivery = AlertDelivery.local,
+    String? room,
+  }) {
+    if (_disposed) return null;
+    final event = ActivityEvent(
+      kind: kind,
+      title: title,
+      room: room ?? displayRoom,
+      at: DateTime.now(),
+      id: id ?? PairingInfo.newToken().substring(0, 24),
+      category: category,
+      modelScore: score,
+      modelVersion: score == null ? null : 'yamnet-audioset-v1',
+      durationMs: durationMs,
+      delivery: delivery,
     );
-    if (_events.length > 100) _events.removeRange(100, _events.length);
+    _events.insert(0, event);
+    _pruneActivity();
     prefs?.setString(
       'activity',
       jsonEncode(_events.map((e) => e.toJson()).toList()),
     );
+    return event;
   }
 
   Future<void> clearActivity() async {
     _events.clear();
+    _outbox.clear();
+    await _saveOutbox();
+    if (prefs != null) await AlertInbox.clear(prefs!);
     await prefs?.remove('activity');
     _notify();
   }
@@ -1384,6 +1902,7 @@ class HomeMonitor extends ChangeNotifier {
     _suppressAuto = true;
     _wantListening = false;
     final active = isActive;
+    _role = MonitorRole.idle;
     await _cloud?.stopHome();
     await _cloud?.stopAway();
     await _teardownTalker();
@@ -1396,6 +1915,7 @@ class HomeMonitor extends ChangeNotifier {
     _role = MonitorRole.idle;
     _remoteStatusAt = null;
     _sessionStarted = null;
+    _lastCaptureAt = null;
     soundWatch.reset();
     _levels.fillRange(0, _levels.length, 0.03);
     if (active) _addEvent(ActivityKind.session, 'Monitoring stopped');
@@ -1407,6 +1927,7 @@ class HomeMonitor extends ChangeNotifier {
     _disposed = true;
     _watch?.cancel();
     _healthTimer?.cancel();
+    _outboxTimer?.cancel();
     _channel.setMethodCallHandler(null);
     unawaited(stop().whenComplete(() => _recorderInstance?.dispose()));
     unawaited(soundWatch.dispose());

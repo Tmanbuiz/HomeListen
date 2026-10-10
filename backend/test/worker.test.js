@@ -31,7 +31,7 @@ class MemoryStore {
     }
   }
 }
-function setup() {
+function setup({ sendPush } = {}) {
   const store = new MemoryStore(); let time = 100000000;
   const pushes = [];
   const env = { FIREBASE_PROJECT_ID: "demo-home", FIREBASE_API_KEY: "public-key",
@@ -44,7 +44,10 @@ function setup() {
       if (!uid) throw new HttpError(401, "auth required");
       return { uid };
     },
-    sendPush: async (device, payload) => { pushes.push({ device, payload }); return { sent: true }; },
+    sendPush: async (device, payload) => {
+      pushes.push({ device, payload });
+      return sendPush ? sendPush(device, payload) : { sent: true };
+    },
     iceServers: async () => [{ urls: ["stun:stun.cloudflare.com:3478"] }]
   });
   async function api(path, uid = "home", data = {}, method = "POST", headers = {}) {
@@ -336,4 +339,101 @@ test("a phone that joined with an answer and code shows up with its name", async
   assert.equal(joined.status, 200);
   const list = await s.api("/rooms/" + joined.body.roomId + "/members", "home", {});
   assert.equal(list.body.members[0].label, "Pixel 8");
+});
+
+async function alertHome(options = {}) {
+  const s = setup(options); const { id, secret } = await s.home();
+  await s.join(id, secret);
+  await s.api(`/rooms/${id}/device`, 'away', { kind: 'fcm', token: 'a'.repeat(80) });
+  await s.api(`/rooms/${id}/state`, 'home', { sharing: true });
+  return { ...s, id, secret, alert: (eventId = 'event_retry_123456789') =>
+    s.api(`/rooms/${id}/alerts`, 'home', { id: eventId, kind: 'crying' }) };
+}
+
+test('a failed push can retry the same event ID successfully', async () => {
+  let attempts = 0;
+  const s = await alertHome({ sendPush: async () => {
+    if (++attempts === 1) throw new Error('provider unavailable');
+    return { sent: true };
+  } });
+  const first = await s.alert();
+  assert.equal(first.body.sent, 0); assert.equal(first.body.retryable, true);
+  const second = await s.alert();
+  assert.equal(second.body.sent, 1); assert.equal(second.body.retryable, false);
+  assert.equal((await s.alert()).body.duplicate, true);
+  assert.equal(s.pushes.length, 2);
+  assert.equal(s.pushes[0].payload.id, s.pushes[1].payload.id);
+});
+
+test('partial delivery retries only failed recipients', async () => {
+  let failures = 0;
+  const s = await alertHome({ sendPush: async (device) => {
+    if (device.token.startsWith('b') && failures++ === 0) return { sent: false };
+    return { sent: true };
+  } });
+  await s.join(s.id, s.secret, 'second');
+  await s.api(`/rooms/${s.id}/device`, 'second', { kind: 'fcm', token: 'b'.repeat(80) });
+  assert.equal((await s.alert()).body.retryable, true);
+  const retried = await s.alert();
+  assert.equal(retried.body.sent, 2); assert.equal(retried.body.retryable, false);
+  assert.equal(s.pushes.filter((p) => p.device.token.startsWith('a')).length, 1);
+  assert.equal(s.pushes.filter((p) => p.device.token.startsWith('b')).length, 2);
+});
+
+test('concurrent retries cannot send the same pending alert twice', async () => {
+  let release;
+  const waiting = new Promise((resolve) => { release = resolve; });
+  const s = await alertHome({ sendPush: async () => { await waiting; return { sent: true }; } });
+  const first = s.alert();
+  while (!s.pushes.length) await new Promise((resolve) => setTimeout(resolve, 1));
+  const second = await s.alert();
+  assert.equal(second.body.inProgress, true);
+  assert.equal(s.pushes.length, 1);
+  release();
+  assert.equal((await first).body.retryable, false);
+});
+
+test('expired retries and revoked recipients are never pushed', async () => {
+  const s = await alertHome({ sendPush: async () => ({ sent: false }) });
+  await s.alert();
+  await s.api(`/rooms/${s.id}/revoke-member`, 'home', { uid: 'away' });
+  assert.equal((await s.alert()).body.retryable, false);
+  assert.equal(s.pushes.length, 1);
+  const other = await alertHome({ sendPush: async () => ({ sent: false }) });
+  await other.alert(); other.advance(15 * 60_000);
+  await other.api(`/rooms/${other.id}/state`, 'home', { sharing: true });
+  assert.equal((await other.alert()).body.expired, true);
+  assert.equal(other.pushes.length, 1);
+});
+
+test('Guardian allows alerts while blocking live audio and clearing sessions', async () => {
+  const s = await alertHome();
+  await s.api(`/rooms/${s.id}/sessions`, 'away');
+  assert.equal((await s.api(`/rooms/${s.id}/state`, 'home', { sharing: true, audioAvailable: false })).status, 200);
+  assert.equal((await s.api(`/rooms/${s.id}/sessions`, 'away')).body.code, 'guardian_only');
+  assert.equal((await s.api(`/rooms/${s.id}/ice`, 'away')).status, 409);
+  assert.deepEqual((await s.store.get(`rooms/${s.id}`)).data.activeSessions, {});
+  assert.equal((await s.alert()).body.sent, 1);
+});
+
+test('alerts-only permissions are enforced even when a client requests audio', async () => {
+  const s = await alertHome();
+  await s.api(`/rooms/${s.id}/sessions`, 'away');
+  assert.equal((await s.api(`/rooms/${s.id}/member-access`, 'away', { uid: 'away', role: 'caregiver' })).status, 403);
+  assert.equal((await s.api(`/rooms/${s.id}/member-access`, 'home', { uid: 'away', role: 'alerts' })).status, 200);
+  assert.equal((await s.api(`/rooms/${s.id}/sessions`, 'away')).body.code, 'alerts_only');
+  assert.equal((await s.api(`/rooms/${s.id}/ice`, 'away')).status, 403);
+  assert.equal((await s.alert()).body.sent, 1);
+});
+
+test('temporary guests need a bounded expiry and lose access when it passes', async () => {
+  const s = await alertHome();
+  const path = `/rooms/${s.id}/member-access`;
+  assert.equal((await s.api(path, 'home', { uid: 'away', role: 'guest' })).status, 400);
+  assert.equal((await s.api(path, 'home', { uid: 'away', role: 'guest', expiresAtMs: 100060000 })).status, 200);
+  assert.equal((await s.api(`/rooms/${s.id}/sessions`, 'away')).status, 201);
+  s.advance(60001);
+  assert.equal((await s.api(`/rooms/${s.id}`, 'away', {}, 'GET')).status, 404);
+  assert.equal((await s.api(`/rooms/${s.id}/sessions`, 'away')).status, 404);
+  assert.equal((await s.alert()).body.sent, 0);
 });

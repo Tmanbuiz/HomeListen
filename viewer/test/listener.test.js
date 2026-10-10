@@ -2,7 +2,23 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { AudioSession } from "../src/audio-session.js";
 import { parsePairing } from "../src/pairing.js";
+import { canListen, memberAccess } from "../src/access.js";
 const roomId = "a".repeat(24), secret = "B".repeat(43);
+test('Guardian, alerts-only access and guest expiry disable listening', () => {
+  const now = Date.now();
+  const room = { members: { away: true }, sharing: true, lastSeenMs: now };
+  assert.equal(canListen(room, 'away', now), true);
+  assert.equal(canListen({ ...room, audioAvailable: false }, 'away', now), false);
+  const alerts = { ...room, memberAccess: { away: { role: 'alerts' } } };
+  assert.equal(memberAccess(alerts, 'away', now), true);
+  assert.equal(canListen(alerts, 'away', now), false);
+  const guest = { ...room, memberAccess: { away: { role: 'guest', expiresAtMs: now + 1000 } } };
+  assert.equal(canListen(guest, 'away', now), true);
+  assert.equal(memberAccess(guest, 'away', now + 1000), false);
+  assert.equal(canListen(guest, 'away', now + 1000), false);
+  assert.equal(canListen(room, 'stranger', now), false);
+  assert.equal(canListen({ ...room, lastSeenMs: now - 120_000 }, 'away', now), false);
+});
 test("invitation accepts only this server and keeps the secret in the fragment", () => {
   const good = "https://home.example/#pair=" + roomId + "." + secret;
   assert.deepEqual(parsePairing(good, "https://home.example"), { roomId, secret });

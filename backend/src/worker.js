@@ -1,6 +1,7 @@
 import webpush from "web-push";
 import { HttpError, authenticate, constantTimeEqual, digest, publicConfig, randomId, requireId, serviceToken } from "./security.js";
 import { FirestoreStore } from "./store.js";
+import { deliverAlert } from "./alert-delivery.js";
 import { base32Decode, newSecret, otpauthUri, verifyTotp } from "./totp.js";
 
 const LEASE_MS = 120_000;
@@ -13,8 +14,8 @@ const TOTP_MAX_FAILURES = 5;
 const TOTP_LOCK_MS = 10 * 60_000;
 const titles = {
   crying: "Possible crying",
-  barking: "Possible barking",
-  knocking: "Possible knocking",
+  barking: "Possible dog sound",
+  knocking: "Possible knock or doorbell",
   loud: "Possible loud sound",
   test: "Test alert"
 };
@@ -165,6 +166,18 @@ function requireSharing(room, now) {
   }
 }
 
+function requireLiveAudio(room, uid, nowMs) {
+  requireSharing(room, nowMs);
+  if (room.audioAvailable === false) {
+    throw new HttpError(409, 'Guardian is active at home. Live listening is off.', 'guardian_only');
+  }
+  const access = room.memberAccess?.[uid];
+  if (room.ownerUid !== uid && (access?.role === 'alerts' ||
+      (access?.expiresAtMs != null && access.expiresAtMs <= nowMs))) {
+    throw new HttpError(403, 'This phone has alerts-only access.', 'alerts_only');
+  }
+}
+
 async function mutateRoom(store, id, uid, ownerOnly, update) {
   for (let attempt = 0; attempt < 5; attempt++) {
     const room = await readRoom(store, id, uid, ownerOnly);
@@ -234,6 +247,7 @@ export async function sendDevicePush(device, payload, env) {
       "https://fcm.googleapis.com/v1/projects/" + encodeURIComponent(env.FIREBASE_PROJECT_ID) + "/messages:send",
       {
         method: "POST",
+        signal: AbortSignal.timeout(10_000),
         headers: { authorization: "Bearer " + token, "content-type": "application/json" },
         body: JSON.stringify({ message: {
           token: device.token,
@@ -270,6 +284,7 @@ export async function sendDevicePush(device, payload, env) {
     });
     const response = await fetch(options.endpoint, {
       method: options.method,
+      signal: AbortSignal.timeout(10_000),
       headers: options.headers,
       body: options.body
     });
@@ -296,7 +311,9 @@ export function createWorker(overrides = {}) {
         version: "2.0.0"
       });
     }
-    if (request.method === "GET" && path === "/api/config") return json(publicConfig(env));
+    if (request.method === "GET" && path === "/api/config") return json({
+      ...publicConfig(env), features: { guardian: true, retryAlerts: true, memberAccess: true }
+    });
     const { uid } = await auth(request, env);
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(uid)) throw new HttpError(401, "Invalid phone identity.");
     const store = storeFor(env);
@@ -363,9 +380,13 @@ export function createWorker(overrides = {}) {
       return json({ roomId: id, room: data });
     }
 
-    const ownerOnly = ["invite", "state", "revoke", "alerts", "totp-start", "totp-confirm", "totp-off", "answer-info", "answer-set", "members", "revoke-member"]
+    const ownerOnly = ["invite", "state", "revoke", "alerts", "totp-start", "totp-confirm", "totp-off", "answer-info", "answer-set", "members", "revoke-member", "member-access"]
       .includes(action);
     const room = await readRoom(store, id, uid, ownerOnly);
+    const access = room.data.memberAccess?.[uid];
+    if (room.data.ownerUid !== uid && access?.expiresAtMs != null && access.expiresAtMs <= now()) {
+      throw new HttpError(404, 'Your temporary access has expired. Ask the home phone owner to renew it.', 'access_expired');
+    }
 
     if (action === "" && request.method === "GET") return json({ roomId: id, room: room.data });
     if (action === "invite" && request.method === "POST") {
@@ -407,9 +428,27 @@ export function createWorker(overrides = {}) {
           uid: member,
           label: known[member]?.label ?? "Listening phone",
           joinedAtMs: known[member]?.joinedAtMs ?? null,
-          listening: room.data.activeSessions?.[member] != null
+          listening: room.data.activeSessions?.[member] != null,
+          role: room.data.memberAccess?.[member]?.role ?? 'caregiver',
+          expiresAtMs: room.data.memberAccess?.[member]?.expiresAtMs ?? null
         }));
       return json({ members });
+    }
+    if (action === 'member-access' && request.method === 'POST') {
+      const input = await body(request);
+      if (room.data.members?.[input.uid] !== true) throw new HttpError(404, 'That phone is not paired.');
+      if (!['caregiver', 'alerts', 'guest'].includes(input.role)) throw new HttpError(400, 'Choose a supported access role.');
+      const expiry = input.expiresAtMs ?? null;
+      if ((input.role === 'guest' && expiry === null) || (expiry !== null &&
+          (!Number.isSafeInteger(expiry) || expiry <= now() || expiry > now() + 7 * 24 * 60 * 60_000))) {
+        throw new HttpError(400, 'Temporary access must end within seven days.');
+      }
+      await mutateRoom(store, id, uid, true, (data) => {
+        data.memberAccess = { ...data.memberAccess, [input.uid]: { role: input.role, expiresAtMs: expiry } };
+        if (input.role === 'alerts') delete data.activeSessions[input.uid];
+        return data;
+      });
+      return json({ updated: true });
     }
     if (action === "revoke-member" && request.method === "POST") {
       // Removes one listening phone. The others, and the pairing codes, are
@@ -420,6 +459,7 @@ export function createWorker(overrides = {}) {
       }
       await mutateRoom(store, id, uid, true, (data) => {
         delete data.members[input.uid]; delete data.watchers[input.uid]; delete data.activeSessions[input.uid];
+        if (data.memberAccess) delete data.memberAccess[input.uid];
         return data;
       });
       await store.delete("rooms/" + id + "/devices/" + input.uid);
@@ -482,7 +522,7 @@ export function createWorker(overrides = {}) {
     }
     if (action === "revoke" && request.method === "POST") {
       await mutateRoom(store, id, uid, true, (data) => ({
-        ...data, members: {}, watchers: {}, activeSessions: {}, generation: data.generation + 1
+        ...data, members: {}, memberAccess: {}, watchers: {}, activeSessions: {}, generation: data.generation + 1
       }));
       await store.delete("roomInvites/" + id);
       return json({ revoked: true });
@@ -490,7 +530,9 @@ export function createWorker(overrides = {}) {
     if (action === "leave" && request.method === "POST") {
       if (room.data.ownerUid === uid) throw new HttpError(400, "The home phone cannot leave its own room.");
       await mutateRoom(store, id, uid, false, (data) => {
-        delete data.members[uid]; delete data.watchers[uid]; delete data.activeSessions[uid]; return data;
+        delete data.members[uid]; delete data.watchers[uid]; delete data.activeSessions[uid];
+        if (data.memberAccess) delete data.memberAccess[uid];
+        return data;
       });
       await store.delete("rooms/" + id + "/devices/" + uid);
       return json({ left: true });
@@ -500,24 +542,32 @@ export function createWorker(overrides = {}) {
       if (typeof input.sharing !== "boolean") throw new HttpError(400, "Set sharing to true or false.");
       const name = input.roomName == null ? room.data.roomName : roomName(input.roomName);
       const battery = Number.isInteger(input.battery) && input.battery >= 0 && input.battery <= 100 ? input.battery : null;
+      if (input.audioAvailable != null && typeof input.audioAvailable !== 'boolean') throw new HttpError(400, 'Invalid live audio setting.');
+      const audioAvailable = input.sharing && (input.audioAvailable ?? true);
+      const detector = input.detector && typeof input.detector === 'object' ? {
+        enabled: input.detector.enabled === true,
+        ready: input.detector.ready === true,
+        windows: Number.isSafeInteger(input.detector.windows) ? Math.max(0, input.detector.windows) : 0,
+        lastAudioMs: Number.isSafeInteger(input.detector.lastAudioMs) ? Math.min(now(), input.detector.lastAudioMs) : null,
+      } : null;
       await mutateRoom(store, id, uid, true, (data) => ({
-        ...data, sharing: input.sharing, roomName: name, battery,
-        activeSessions: input.sharing ? data.activeSessions : {},
+        ...data, sharing: input.sharing, roomName: name, battery, audioAvailable, detector,
+        activeSessions: audioAvailable ? data.activeSessions : {},
         charging: typeof input.charging === "boolean" ? input.charging : null,
         lastSeenMs: now()
       }));
       return json({ sharing: input.sharing });
     }
     if (action === "ice" && request.method === "POST") {
-      requireSharing(room.data, now());
+      requireLiveAudio(room.data, uid, now());
       return json({ iceServers: await ice(env), refreshAfterSeconds: 1800 });
     }
     if (action === "sessions" && request.method === "POST") {
       if (room.data.ownerUid === uid) throw new HttpError(400, "Listen using another phone.");
-      requireSharing(room.data, now());
+      requireLiveAudio(room.data, uid, now());
       for (let attempt = 0; attempt < 5; attempt++) {
         const current = await readRoom(store, id, uid);
-        requireSharing(current.data, now());
+        requireLiveAudio(current.data, uid, now());
         const sessionId = randomId();
         const expiresAt = new Date(now() + SESSION_MS);
         const data = {
@@ -562,37 +612,13 @@ export function createWorker(overrides = {}) {
       const input = await body(request);
       const eventId = requireId(input.id);
       if (!Object.hasOwn(titles, input.kind)) throw new HttpError(400, "Invalid sound alert category.");
-      const receiptPath = "rooms/" + id + "/alertReceipts/" + eventId;
-      const previous = await store.get(receiptPath);
-      if (previous) return json({ duplicate: true, sent: 0 });
-      await mutateRoom(store, id, uid, true, (data) => {
-        if (now() - (data.lastAlertMs ?? 0) < 5000) throw new HttpError(429, "Sounds are being grouped. Try again in a few seconds.");
-        return { ...data, lastAlertMs: now() };
-      });
-      await store.put(receiptPath, { expiresAt: new Date(now() + 60 * 60_000) }, null);
-      const payload = {
-        id: eventId, title: titles[input.kind], room: room.data.roomName,
-        roomId: id, kind: input.kind, sentAt: now()
-      };
-      const outcomes = await Promise.all(Object.keys(room.data.members).map(async (viewerUid) => {
-        const path = "rooms/" + id + "/devices/" + viewerUid;
-        const device = await store.get(path);
-        if (!device) return { sent: false, registered: false };
-        try {
-          const result = await push(device.data, payload, env);
-          if (result.expired) {
-            await store.delete(path);
-            await mutateRoom(store, id, uid, true, (data) => {
-              delete data.watchers[viewerUid]; return data;
-            });
-          }
-          return { ...result, registered: true };
-        } catch { return { sent: false, registered: true }; }
-      }));
-      return json({
-        sent: outcomes.filter((result) => result.sent).length,
-        registered: outcomes.filter((result) => result.registered).length
-      });
+      const delivery = await deliverAlert({ store, id, uid, room: room.data, eventId, kind: input.kind,
+        title: titles[input.kind], now, push, env,
+        rateLimit: () => mutateRoom(store, id, uid, true, (data) => {
+          if (now() - (data.lastAlertMs ?? 0) < 5000) throw new HttpError(429, 'Sounds are being grouped. Try again in a few seconds.');
+          return { ...data, lastAlertMs: now() };
+        }) });
+      return json(delivery);
     }
     throw new HttpError(405, "This action is not supported.");
   }

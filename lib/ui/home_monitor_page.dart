@@ -11,6 +11,7 @@ import '../core/cloud_connection.dart' show CloudMember;
 import '../core/cloud_pairing.dart';
 import '../protocols/mic_monitor.dart';
 import 'design.dart';
+import 'guardian_panel.dart';
 
 class HomeMonitorPage extends StatefulWidget {
   const HomeMonitorPage({super.key});
@@ -189,7 +190,7 @@ class _Dashboard extends StatelessWidget {
     final home = monitor.deviceRole == DeviceRole.home;
     final scheme = Theme.of(context).colorScheme;
     final on = home
-        ? monitor.isTalking
+        ? monitor.isMonitoring
         : monitor.isListening || monitor.isWatching;
     final state = home
         ? (on ? 'Microphone ON' : 'Microphone off')
@@ -215,12 +216,18 @@ class _Dashboard extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _Heading(
-          home ? 'Share this room' : 'Your home',
+          home
+              ? (monitor.guardianOnly ? 'Guard this room' : 'Share this room')
+              : 'Your home',
           home
               ? 'Your microphone, under your control.'
               : 'Hear what’s happening in your room.',
         ),
         const SizedBox(height: 22),
+        if (home) ...[
+          HomeModeSelector(monitor: monitor),
+          const SizedBox(height: 18),
+        ],
         SurfaceCard(
           padding: 16,
           child: Row(
@@ -272,7 +279,9 @@ class _Dashboard extends StatelessWidget {
         const SizedBox(height: 8),
         Text(
           home
-              ? (on
+              ? (monitor.isGuardian
+                    ? 'Local Guardian active · live listening off'
+                    : on
                     ? monitor.talkerHasListener
                           ? (monitor.talkerListenerCount > 1
                                 ? 'Sharing with ${monitor.talkerListenerCount} listening phones'
@@ -384,7 +393,9 @@ class _Dashboard extends StatelessWidget {
             label: Text(
               monitor.busy
                   ? home
-                        ? 'Starting sharing…'
+                        ? monitor.guardianOnly
+                              ? 'Starting Guardian…'
+                              : 'Starting sharing…'
                         : 'Connecting…'
                   : on
                   ? home
@@ -393,8 +404,12 @@ class _Dashboard extends StatelessWidget {
                         ? 'Stop watching'
                         : 'Stop listening'
                   : home
-                  ? 'Share this room'
-                  : 'Listen to home',
+                  ? monitor.guardianOnly
+                        ? 'Start Guardian'
+                        : 'Share this room'
+                  : monitor.liveAvailable
+                  ? 'Listen to home'
+                  : 'Watch Guardian alerts',
             ),
           ),
         if (!home && monitor.hasPairing && !on && !monitor.busy)
@@ -410,13 +425,14 @@ class _Dashboard extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.only(top: 8),
             child: SegmentedButton<bool>(
-              segments: const [
+              segments: [
                 ButtonSegment(
                   value: false,
-                  icon: Icon(Icons.headphones),
-                  label: Text('Listen'),
+                  enabled: monitor.liveAvailable,
+                  icon: const Icon(Icons.headphones),
+                  label: const Text('Listen'),
                 ),
-                ButtonSegment(
+                const ButtonSegment(
                   value: true,
                   icon: Icon(Icons.notifications_active_outlined),
                   label: Text('Alerts only'),
@@ -466,6 +482,10 @@ class _Dashboard extends StatelessWidget {
             ],
           ),
         const SizedBox(height: 24),
+        if (home) ...[
+          GuardianOverview(monitor: monitor),
+          const SizedBox(height: 18),
+        ],
         _WatchCard(monitor: monitor, onActivity: onActivity),
         const SizedBox(height: 18),
         SurfaceCard(
@@ -500,7 +520,7 @@ class _Dashboard extends StatelessWidget {
             const SizedBox(width: 6),
             Flexible(
               child: Text(
-                'Live audio only. Nothing recorded.',
+                'Sound stays under your control. No audio recordings.',
                 style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12),
               ),
             ),
@@ -557,100 +577,205 @@ class _WatchCard extends StatelessWidget {
   );
 }
 
-class _Activity extends StatelessWidget {
+class _Activity extends StatefulWidget {
   const _Activity({required this.monitor});
   final HomeMonitor monitor;
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      const _Heading('Activity', 'Sound events and monitoring updates.'),
-      const SizedBox(height: 24),
-      if (monitor.events.isEmpty)
-        const SurfaceCard(
-          child: Padding(
-            padding: EdgeInsets.symmetric(vertical: 32),
-            child: Column(
-              children: [
-                Icon(Icons.graphic_eq, size: 44),
-                SizedBox(height: 16),
-                Text(
-                  'No activity yet',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
-                ),
-                SizedBox(height: 8),
-                Text(
-                  'Start sharing or listening to see updates here.',
-                  textAlign: TextAlign.center,
-                ),
-              ],
-            ),
-          ),
+  State<_Activity> createState() => _ActivityState();
+}
+
+class _ActivityState extends State<_Activity> {
+  String _filter = 'All', _query = '';
+  int _visible = 50;
+  HomeMonitor get monitor => widget.monitor;
+  @override
+  Widget build(BuildContext context) {
+    final rows = monitor.events
+        .where(
+          (event) =>
+              (_filter == 'All' ||
+                  (_filter == 'Sounds' && event.kind == ActivityKind.sound) ||
+                  (_filter == 'Connections' &&
+                      [
+                        ActivityKind.connected,
+                        ActivityKind.disconnected,
+                        ActivityKind.session,
+                      ].contains(event.kind)) ||
+                  (_filter == 'Waiting' &&
+                      event.delivery == AlertDelivery.queued)) &&
+              '${event.title} ${event.room}'.toLowerCase().contains(
+                _query.toLowerCase(),
+              ),
         )
-      else
-        ...monitor.events.map(
-          (event) => Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: SurfaceCard(
-              padding: 16,
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
+        .toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const _Heading('Activity', 'Sound events and monitoring updates.'),
+        const SizedBox(height: 12),
+        Text(monitor.todaySummary),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 8,
+          children: [
+            for (final filter in ['All', 'Sounds', 'Connections', 'Waiting'])
+              ChoiceChip(
+                label: Text(filter),
+                selected: _filter == filter,
+                onSelected: (_) => setState(() {
+                  _filter = filter;
+                  _visible = 50;
+                }),
+              ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          decoration: const InputDecoration(
+            labelText: 'Search activity',
+            prefixIcon: Icon(Icons.search),
+          ),
+          onChanged: (value) => setState(() {
+            _query = value;
+            _visible = 50;
+          }),
+        ),
+        const SizedBox(height: 24),
+        if (rows.isEmpty)
+          const SurfaceCard(
+            child: Padding(
+              padding: EdgeInsets.symmetric(vertical: 32),
+              child: Column(
                 children: [
-                  Icon(switch (event.kind) {
-                    ActivityKind.sound => Icons.notifications_active_outlined,
-                    ActivityKind.battery => Icons.battery_alert_outlined,
-                    ActivityKind.disconnected => Icons.wifi_off_outlined,
-                    ActivityKind.connected => Icons.wifi,
-                    _ => Icons.mic_none,
-                  }, color: Theme.of(context).colorScheme.primary),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
+                  Icon(Icons.graphic_eq, size: 44),
+                  SizedBox(height: 16),
+                  Text(
+                    'No activity yet',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                  ),
+                  SizedBox(height: 8),
+                  Text(
+                    'Start sharing or listening to see updates here.',
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
+            ),
+          )
+        else
+          ...rows
+              .take(_visible)
+              .map(
+                (event) => Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: SurfaceCard(
+                    padding: 16,
+                    child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          event.title,
-                          style: const TextStyle(fontWeight: FontWeight.w600),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          '${event.room} • ${_time(event.at)}',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onSurfaceVariant,
+                        Icon(switch (event.kind) {
+                          ActivityKind.sound =>
+                            Icons.notifications_active_outlined,
+                          ActivityKind.battery => Icons.battery_alert_outlined,
+                          ActivityKind.disconnected => Icons.wifi_off_outlined,
+                          ActivityKind.connected => Icons.wifi,
+                          _ => Icons.mic_none,
+                        }, color: Theme.of(context).colorScheme.primary),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                event.title,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                '${event.room} • ${_time(event.at)}',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurfaceVariant,
+                                ),
+                              ),
+                              if (event.kind == ActivityKind.sound) ...[
+                                const SizedBox(height: 6),
+                                Text(
+                                  event.deliveryLabel,
+                                  style: const TextStyle(fontSize: 12),
+                                ),
+                                if (event.modelScore != null)
+                                  Text(
+                                    'Model score ${event.modelScore!.toStringAsFixed(2)} · ${event.modelVersion}',
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                              ],
+                            ],
                           ),
                         ),
                       ],
                     ),
                   ),
-                ],
+                ),
               ),
-            ),
+        const SizedBox(height: 8),
+        if (rows.length > _visible)
+          TextButton(
+            onPressed: () => setState(() => _visible += 50),
+            child: const Text('Show more events'),
           ),
+        const Text(
+          'Only event details are saved on this phone. Sound detections are estimates; tap Home to listen and check.',
+          style: TextStyle(fontSize: 12),
         ),
-      const SizedBox(height: 8),
-      const Text(
-        'Only event details are saved on this phone. Sound detections are estimates; tap Home to listen and check.',
-        style: TextStyle(fontSize: 12),
-      ),
-      if (monitor.events.isNotEmpty)
-        TextButton(
-          onPressed: () async {
-            if (await _confirm(
-                  context,
-                  'Clear activity?',
-                  'This removes saved event details from this phone.',
-                ) ==
-                true) {
-              await monitor.clearActivity();
-            }
-          },
-          child: const Text('Clear activity'),
+        if (monitor.events.isNotEmpty)
+          OutlinedButton.icon(
+            onPressed: () async {
+              final message = await monitor.exportEventFile();
+              if (context.mounted)
+                ScaffoldMessenger.of(context)
+                    .showSnackBar(SnackBar(content: Text(message)));
+            },
+            icon: const Icon(Icons.download_outlined),
+            label: const Text('Export event history'),
+          ),
+        const SizedBox(height: 12),
+        Text(
+          'Keep ${monitor.guardianSettings.retentionDays} days · up to 500 events',
+          style: const TextStyle(fontSize: 12),
         ),
-    ],
-  );
+        Wrap(
+          spacing: 8,
+          children: [
+            for (final days in [1, 7, 30])
+              ChoiceChip(
+                label: Text('$days day${days == 1 ? '' : 's'}'),
+                selected: monitor.guardianSettings.retentionDays == days,
+                onSelected: (_) => monitor.setRetentionDays(days),
+              ),
+          ],
+        ),
+        if (monitor.events.isNotEmpty)
+          TextButton(
+            onPressed: () async {
+              if (await _confirm(
+                    context,
+                    'Clear activity?',
+                    'This removes saved event details and waiting alerts from this phone.',
+                  ) ==
+                  true) {
+                await monitor.clearActivity();
+              }
+            },
+            child: const Text('Clear activity'),
+          ),
+      ],
+    );
+  }
 }
 
 class _Devices extends StatelessWidget {
@@ -1035,7 +1160,7 @@ class _Settings extends StatelessWidget {
                       ? monitor.soundWatch.status
                       : '${monitor.soundWatch.status}\nHearing now: '
                             '${monitor.soundWatch.lastHeard} '
-                            '(${(monitor.soundWatch.lastHeardScore * 100).round()}%)',
+                            '(model score ${monitor.soundWatch.lastHeardScore.toStringAsFixed(2)})',
                   style: TextStyle(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
@@ -1071,7 +1196,7 @@ class _Settings extends StatelessWidget {
               children: ['crying', 'barking', 'knocking', 'loud sound']
                   .map(
                     (name) => FilterChip(
-                      label: Text(name[0].toUpperCase() + name.substring(1)),
+                      label: Text(HomeMonitor.soundCategoryLabel(name)),
                       selected: monitor.soundWatch.categories.contains(name),
                       onSelected: (value) =>
                           monitor.toggleSoundCategory(name, value),
@@ -1131,6 +1256,12 @@ class _Settings extends StatelessWidget {
           ],
         ),
       ),
+      if (monitor.deviceRole == DeviceRole.home) ...[
+        const SizedBox(height: 18),
+        GuardianSettingsCard(monitor: monitor),
+      ],
+      const SizedBox(height: 18),
+      SpeechSessionsCard(monitor: monitor),
       const SizedBox(height: 18),
       SurfaceCard(
         child: Column(
@@ -1157,7 +1288,7 @@ class _Settings extends StatelessWidget {
               onPressed: () => showLicensePage(
                 context: context,
                 applicationName: 'Home Listen',
-                applicationVersion: '1.2.5',
+                applicationVersion: '2.1.0',
               ),
               icon: const Icon(Icons.description_outlined),
               label: const Text('Open-source licenses'),
@@ -1168,7 +1299,7 @@ class _Settings extends StatelessWidget {
       const SizedBox(height: 24),
       const Center(
         child: Text(
-          'Home Listen 1.2.5 • WianTribe',
+          'Home Listen 2.1.0 • WianTribe',
           style: TextStyle(fontSize: 12),
         ),
       ),
@@ -1282,6 +1413,81 @@ class _ConnectedDevicesState extends State<_ConnectedDevices> {
     await _load();
   }
 
+  Future<void> _access(CloudMember member) async {
+    var role = member.role;
+    var hours = 24;
+    final save = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, change) => AlertDialog(
+          title: Text('Access for ${member.label}'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Only the home phone can change access.'),
+                const SizedBox(height: 12),
+                for (final entry in {
+                  'caregiver': 'Caregiver · live audio and alerts',
+                  'alerts': 'Alerts only · no live audio',
+                  'guest': 'Temporary guest · live audio and alerts',
+                }.entries)
+                  ChoiceChip(
+                    label: Text(entry.value),
+                    selected: role == entry.key,
+                    onSelected: (_) => change(() => role = entry.key),
+                  ),
+                if (role == 'guest') ...[
+                  const SizedBox(height: 16),
+                  const Text('Access ends after'),
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      for (final value in [1, 24, 168])
+                        ChoiceChip(
+                          label: Text(
+                            value == 1
+                                ? '1 hour'
+                                : value == 24
+                                ? '1 day'
+                                : '7 days',
+                          ),
+                          selected: hours == value,
+                          onSelected: (_) => change(() => hours = value),
+                        ),
+                    ],
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Save access'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (save != true) return;
+    final error = await widget.monitor.setDeviceAccess(
+      member.uid,
+      role,
+      role == 'guest' ? DateTime.now().add(Duration(hours: hours)) : null,
+    );
+    if (!mounted) return;
+    if (error != null)
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(error)));
+    await _load();
+  }
+
   @override
   Widget build(BuildContext context) {
     final members = _members;
@@ -1326,13 +1532,28 @@ class _ConnectedDevicesState extends State<_ConnectedDevices> {
                 subtitle: Text(
                   [
                     if (member.listening) 'Listening now',
+                    member.role == 'alerts'
+                        ? 'Alerts only'
+                        : member.role == 'guest'
+                        ? 'Temporary guest'
+                        : 'Caregiver',
+                    if (member.expiresAt != null)
+                      'Ends ${_time(member.expiresAt!)}',
                     if (member.joinedAt != null)
                       'Paired ${_time(member.joinedAt!)}',
                   ].join(' • '),
                 ),
-                trailing: TextButton(
-                  onPressed: () => _revoke(member),
-                  child: const Text('Revoke'),
+                trailing: PopupMenuButton<String>(
+                  tooltip: 'Device access',
+                  onSelected: (value) =>
+                      value == 'access' ? _access(member) : _revoke(member),
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(
+                      value: 'access',
+                      child: Text('Change access'),
+                    ),
+                    PopupMenuItem(value: 'revoke', child: Text('Revoke')),
+                  ],
                 ),
               ),
         ],

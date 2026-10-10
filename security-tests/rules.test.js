@@ -87,3 +87,27 @@ test("ended sessions cannot be restarted or receive more candidates", async () =
   await assertFails(setDoc(doc(db("away"), path, "candidates", "late"),
     { candidate: "late", sdpMid: "0", sdpMLineIndex: 0, side: "away", expiresAt: expiry }));
 });
+
+test('Guardian and alerts-only roles block direct SDK signaling', async () => {
+  for (const change of [{ audioAvailable: false }, { audioAvailable: true, memberAccess: { away: { role: 'alerts', expiresAtMs: null } } }]) {
+    await env.withSecurityRulesDisabled(async (context) => {
+      await updateDoc(doc(context.firestore(), 'rooms', roomId), change);
+    });
+    await assertSucceeds(getDoc(doc(db('away'), 'rooms', roomId)));
+    await assertFails(getDoc(doc(db('away'), path)));
+    await assertFails(updateDoc(doc(db('away'), path), { offer: 'unauthorized offer' }));
+    await assertFails(setDoc(doc(db('away'), path, 'candidates', 'unauthorized'),
+      { candidate: 'ice', sdpMid: '0', sdpMLineIndex: 0, side: 'away', expiresAt: expiry }));
+  }
+});
+
+test('expired guests cannot read room state or continue signaling', async () => {
+  await env.withSecurityRulesDisabled(async (context) => {
+    await updateDoc(doc(context.firestore(), 'rooms', roomId), {
+      memberAccess: { away: { role: 'guest', expiresAtMs: Date.now() - 1000 } },
+    });
+  });
+  await assertFails(getDoc(doc(db('away'), 'rooms', roomId)));
+  await assertFails(getDoc(doc(db('away'), path)));
+  await assertFails(updateDoc(doc(db('away'), path), { offer: 'expired offer' }));
+});
