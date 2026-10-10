@@ -40,8 +40,10 @@ class SmartHomeIntegration {
   String status = 'Not connected';
   String? problem;
   int get queued => _pending.length;
-  bool get connected => _transport?.connected == true && _retry?.isActive != true;
-  SmartHomeTopics get topics => SmartHomeTopics(deviceId, _settings.discoveryPrefix);
+  bool get connected =>
+      _transport?.connected == true && _retry?.isActive != true;
+  SmartHomeTopics get topics =>
+      SmartHomeTopics(deviceId, _settings.discoveryPrefix);
 
   Future<void> configure(SmartHomeSettings settings, String password) async {
     final epoch = ++_epoch;
@@ -56,7 +58,13 @@ class SmartHomeIntegration {
     _transport = null;
     if (old != null) {
       if (old.connected) {
-        try { await old.publish(previousTopics.availability, 'offline', retain: true); } catch (_) {}
+        try {
+          await old.publish(
+            previousTopics.availability,
+            'offline',
+            retain: true,
+          );
+        } catch (_) {}
       }
       await old.close();
     }
@@ -85,16 +93,37 @@ class SmartHomeIntegration {
     final transport = _factory();
     _transport = transport;
     try {
-      await transport.connect(_settings, _password, topics, (topic, payload, retained) {
-        if (epoch != _epoch || _disposed || !identical(_transport, transport)) return;
-        if (topic == '${_settings.discoveryPrefix}/status' && payload == 'online') {
-          unawaited(_sync(epoch).catchError((Object _) { _failed(epoch, transport); }));
+      await transport.connect(_settings, _password, topics, (
+        topic,
+        payload,
+        retained,
+      ) {
+        if (epoch != _epoch || _disposed || !identical(_transport, transport)) {
           return;
         }
-        final command = topics.parseCommand(topic, payload, retained, _settings.allowControls);
-        if (command != null) unawaited(onCommand(command).catchError((Object _) {}));
+        if (topic == '${_settings.discoveryPrefix}/status' &&
+            payload == 'online') {
+          unawaited(
+            _sync(epoch).catchError((Object _) {
+              _failed(epoch, transport);
+            }),
+          );
+          return;
+        }
+        final command = topics.parseCommand(
+          topic,
+          payload,
+          retained,
+          _settings.allowControls,
+        );
+        if (command != null) {
+          unawaited(onCommand(command).catchError((Object _) {}));
+        }
       }, () => _failed(epoch, transport));
-      if (_disposed || epoch != _epoch) { await transport.close(); return; }
+      if (_disposed || epoch != _epoch) {
+        await transport.close();
+        return;
+      }
       await _sync(epoch);
       if (epoch != _epoch || _disposed) return;
       _failures = 0;
@@ -108,8 +137,12 @@ class SmartHomeIntegration {
   }
 
   void _failed(int epoch, [SmartHomeTransport? expected]) {
-    if (_disposed || epoch != _epoch || !_settings.enabled ||
-        (expected != null && !identical(_transport, expected))) return;
+    if (_disposed ||
+        epoch != _epoch ||
+        !_settings.enabled ||
+        (expected != null && !identical(_transport, expected))) {
+      return;
+    }
     status = 'Broker unavailable · retrying';
     problem = 'Check the broker address, TLS certificate, credentials and topic permissions.';
     onChanged();
@@ -135,11 +168,22 @@ class SmartHomeIntegration {
     final address = topics;
     // Clear optional controls when their owner turns the permission off.
     if (!_settings.allowControls) {
-      await transport.publish(address.discovery('select', 'profile_control'), '', retain: true);
+      await transport.publish(
+        address.discovery('select', 'profile_control'),
+        '',
+        retain: true,
+      );
       if (epoch != _epoch || _disposed) return;
-      await transport.publish(address.discovery('button', 'stop'), '', retain: true);
+      await transport.publish(
+        address.discovery('button', 'stop'),
+        '',
+        retain: true,
+      );
     }
-    for (final entry in address.discoveryMessages(roomName(), _settings.allowControls).entries) {
+    for (final entry
+        in address
+            .discoveryMessages(roomName(), _settings.allowControls)
+            .entries) {
       if (epoch != _epoch || _disposed) return;
       await transport.publish(entry.key, jsonEncode(entry.value), retain: true);
     }
@@ -153,45 +197,99 @@ class SmartHomeIntegration {
 
   void tick({bool force = false}) {
     if (!connected || _disposed || _stateQueued) return;
-    if (!force && _lastState != null && _clock().difference(_lastState!) < const Duration(seconds: 15)) return;
+    if (!force &&
+        _lastState != null &&
+        _clock().difference(_lastState!) < const Duration(seconds: 15)) {
+      return;
+    }
     final epoch = _epoch;
     _stateQueued = true;
-    unawaited(_serial(() async {
-      if (epoch != _epoch || !connected || _disposed) return;
-      await _transport!.publish(topics.state, jsonEncode(health()), retain: true);
-      _lastState = _clock();
-      await _flush(epoch);
-    }).catchError((Object _) { _failed(epoch); }).whenComplete(() { _stateQueued = false; }));
+    unawaited(
+      _serial(() async {
+            if (epoch != _epoch || !connected || _disposed) return;
+            await _transport!.publish(
+              topics.state,
+              jsonEncode(health()),
+              retain: true,
+            );
+            _lastState = _clock();
+            await _flush(epoch);
+          })
+          .catchError((Object _) {
+            _failed(epoch);
+          })
+          .whenComplete(() {
+            _stateQueued = false;
+          }),
+    );
   }
 
   void event(ActivityEvent event, String profile) {
-    if (!_settings.enabled || _disposed || event.id == null || event.kind != ActivityKind.sound ||
+    if (!_settings.enabled ||
+        _disposed ||
+        event.id == null ||
+        event.kind != ActivityKind.sound ||
         event.delivery == AlertDelivery.quiet ||
         _clock().difference(event.at) >= const Duration(seconds: 60) ||
-        event.at.isAfter(_clock().add(const Duration(seconds: 30)))) return;
-    final category = event.category == 'loud sound' ? 'loud_sound' : event.category;
-    if (!['crying', 'barking', 'knocking', 'loud_sound', 'test'].contains(category)) return;
+        event.at.isAfter(_clock().add(const Duration(seconds: 30)))) {
+      return;
+    }
+    final category = event.category == 'loud sound'
+        ? 'loud_sound'
+        : event.category;
+    if (![
+      'crying',
+      'barking',
+      'knocking',
+      'loud_sound',
+      'test',
+    ].contains(category)) {
+      return;
+    }
     if (canSend?.call(category ?? '', _clock()) == false) return;
-    _sent.removeWhere((_, at) => _clock().difference(at) > const Duration(minutes: 2));
-    if (_sent.containsKey(event.id) || _pending.any((row) => row['event_id'] == event.id)) return;
+    _sent.removeWhere(
+      (_, at) => _clock().difference(at) > const Duration(minutes: 2),
+    );
+    if (_sent.containsKey(event.id) ||
+        _pending.any((row) => row['event_id'] == event.id)) {
+      return;
+    }
     _pending.add({
-      'event_type': category, 'event_id': event.id, 'observed_at_ms': event.at.millisecondsSinceEpoch,
-      'room': event.room, 'title': event.title, 'profile': profile, 'quiet': false,
-      'model_score': event.modelScore, 'detector_version': event.modelVersion,
+      'event_type': category,
+      'event_id': event.id,
+      'observed_at_ms': event.at.millisecondsSinceEpoch,
+      'room': event.room,
+      'title': event.title,
+      'profile': profile,
+      'quiet': false,
+      'model_score': event.modelScore,
+      'detector_version': event.modelVersion,
       'duration_ms': event.durationMs,
     });
-    while (_pending.length > 50) { _pending.removeAt(0); }
+    while (_pending.length > 50) {
+      _pending.removeAt(0);
+    }
     final epoch = _epoch;
-    if (connected) unawaited(_serial(() => _flush(epoch)).catchError((Object _) { _failed(epoch); }));
+    if (connected) {
+      unawaited(
+        _serial(() => _flush(epoch)).catchError((Object _) {
+          _failed(epoch);
+        }),
+      );
+    }
     onChanged();
   }
 
   Future<void> _flush(int epoch) async {
     while (_pending.isNotEmpty && epoch == _epoch && !_disposed && connected) {
       final row = _pending.first;
-      final age = _clock().millisecondsSinceEpoch - (row['observed_at_ms'] as int);
-      if (age >= 60_000 || age < -30_000 || canSend?.call(row['event_type'] as String, _clock()) == false) {
-        _pending.remove(row); continue;
+      final age =
+          _clock().millisecondsSinceEpoch - (row['observed_at_ms'] as int);
+      if (age >= 60_000 ||
+          age < -30_000 ||
+          canSend?.call(row['event_type'] as String, _clock()) == false) {
+        _pending.remove(row);
+        continue;
       }
       // Event messages are never retained: a new subscriber must not replay old sounds.
       await _transport!.publish(topics.events, jsonEncode(row));
@@ -205,8 +303,15 @@ class SmartHomeIntegration {
   void clearPending() => _pending.clear();
   void resync() {
     final epoch = _epoch;
-    if (connected) unawaited(_sync(epoch).catchError((Object _) { _failed(epoch); }));
+    if (connected) {
+      unawaited(
+        _sync(epoch).catchError((Object _) {
+          _failed(epoch);
+        }),
+      );
+    }
   }
+
   Future<void> settle() => _tail;
   Future<void> dispose() async {
     _disposed = true;
@@ -217,7 +322,9 @@ class SmartHomeIntegration {
     _transport = null;
     if (transport == null) return;
     if (transport.connected) {
-      try { await transport.publish(topics.availability, 'offline', retain: true); } catch (_) {}
+      try {
+        await transport.publish(topics.availability, 'offline', retain: true);
+      } catch (_) {}
     }
     await transport.close();
   }

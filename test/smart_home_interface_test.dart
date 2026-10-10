@@ -5,7 +5,9 @@ import 'package:home_listen/ui/smart_home_panel.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
-  testWidgets('smart home setup fits a small phone with enlarged text', (tester) async {
+  testWidgets('smart home setup fits a small phone with enlarged text', (
+    tester,
+  ) async {
     SharedPreferences.setMockInitialValues({'device_role': 'home'});
     final monitor = HomeMonitor(prefs: await SharedPreferences.getInstance());
     tester.view.physicalSize = const Size(360, 780);
@@ -17,8 +19,18 @@ void main() {
     await tester.pumpWidget(MaterialApp(home: SmartHomePage(monitor: monitor)));
     expect(find.text('Home Assistant & Matter'), findsOneWidget);
     expect(tester.takeException(), isNull);
-    for (final label in ['Broker password', 'Save connection', 'House mode', 'Matter devices', 'Open Home Assistant']) {
-      await tester.scrollUntilVisible(find.text(label), 250, scrollable: find.byType(Scrollable).first);
+    for (final label in [
+      'Broker password',
+      'Save connection',
+      'House mode',
+      'Matter devices',
+      'Open Home Assistant',
+    ]) {
+      await tester.scrollUntilVisible(
+        find.text(label),
+        250,
+        scrollable: find.byType(Scrollable).first,
+      );
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull, reason: label);
     }
