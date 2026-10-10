@@ -5,7 +5,7 @@
 - **Guardian:** a local microphone tap runs the bundled YAMNet detector without creating a live WebRTC microphone track. Remote live-listening requests are disabled. Starting capture always requires a tap on the home phone.
 - **Live + Guardian:** the existing encrypted live-listening path with local selected-sound detection. Switching modes stops monitoring; the user must start again locally.
 - Individual rules for crying, dog sounds, knocks/doorbells and loud sounds: minimum score/loudness threshold, minimum elapsed detection duration, cooldown and quiet-hours bypass. Model scores are not calibrated probabilities.
-- Quiet hours in the home phone's local time. Suppressed events remain in history. Equal start/end times create no quiet interval.
+- Quiet hours in the home phone's local time. Suppressed events remain in history; queued sound retries pause during quiet hours and still expire after 15 minutes. Explicit test alerts bypass quiet hours. Equal start/end times create no quiet interval.
 - Local activity with stable event IDs, category, detector score/version when available, observed analysis-window span and delivery state. Search, filters, pagination, daily counts, 1/7/30-day retention and a 500-event limit.
 - JSON metadata export through Android's document picker, with no audio samples or recordings.
 - An Android background-notification inbox that merges into Activity after reopening, deduplicated by event ID.

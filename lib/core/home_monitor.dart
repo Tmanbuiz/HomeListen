@@ -1274,6 +1274,16 @@ class HomeMonitor extends ChangeNotifier {
       for (final alert in _outbox.toList()) {
         if (_disposed || !isMonitoring || !cloud!.sharing) break;
         if (!force && !alert.due(DateTime.now())) continue;
+        final event = _events.where((e) => e.id == alert.id).firstOrNull;
+        // Re-check the clock on every retry. An offline alert must not wake
+        // someone after quiet hours begin; explicit test alerts still work.
+        if (alert.title != 'Test alert' &&
+            _guardianSettings.suppresses(
+              event?.category ?? '',
+              DateTime.now(),
+            )) {
+          continue;
+        }
         if ((alert.roomId != null && alert.roomId != cloud.roomId) ||
             (alert.origin != null && alert.origin != cloudServer)) {
           _outbox.remove(alert);
