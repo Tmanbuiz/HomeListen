@@ -437,3 +437,13 @@ test('temporary guests need a bounded expiry and lose access when it passes', as
   assert.equal((await s.api(`/rooms/${s.id}/sessions`, 'away')).status, 404);
   assert.equal((await s.alert()).body.sent, 0);
 });
+
+test("revoking everyone or leaving also forgets the stored device names", async () => {
+  const s = setup(); const { id } = await s.home();
+  await s.api("/rooms/" + id + "/join", "phoneA", { secret: await freshInvite(s, id), label: "Galaxy S24" });
+  await s.api("/rooms/" + id + "/join", "phoneB", { secret: await freshInvite(s, id), label: "Web" });
+  assert.equal((await s.api("/rooms/" + id + "/leave", "phoneB", {})).status, 200);
+  assert.deepEqual(Object.keys((await s.store.get("roomMembers/" + id)).data), ["phoneA"]);
+  assert.equal((await s.api("/rooms/" + id + "/revoke", "home", {})).status, 200);
+  assert.equal(await s.store.get("roomMembers/" + id), null);
+});

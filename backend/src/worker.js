@@ -308,7 +308,7 @@ export function createWorker(overrides = {}) {
         ok: true,
         configured: Boolean(env.FIREBASE_PROJECT_ID && env.FIREBASE_API_KEY &&
           env.FIREBASE_WEB_APP_ID && env.FIREBASE_ANDROID_APP_ID && env.FIREBASE_SERVICE_ACCOUNT),
-        version: "2.0.0"
+        version: "2.1.1"
       });
     }
     if (request.method === "GET" && path === "/api/config") return json({
@@ -525,6 +525,7 @@ export function createWorker(overrides = {}) {
         ...data, members: {}, memberAccess: {}, watchers: {}, activeSessions: {}, generation: data.generation + 1
       }));
       await store.delete("roomInvites/" + id);
+      await store.delete("roomMembers/" + id);
       return json({ revoked: true });
     }
     if (action === "leave" && request.method === "POST") {
@@ -535,6 +536,11 @@ export function createWorker(overrides = {}) {
         return data;
       });
       await store.delete("rooms/" + id + "/devices/" + uid);
+      const known = await store.get("roomMembers/" + id);
+      if (known && uid in known.data) {
+        const { [uid]: _gone, ...rest } = known.data;
+        await store.put("roomMembers/" + id, rest, known.version);
+      }
       return json({ left: true });
     }
     if (action === "state" && request.method === "POST") {
@@ -666,3 +672,4 @@ export function createWorker(overrides = {}) {
 }
 
 export default createWorker();
+
