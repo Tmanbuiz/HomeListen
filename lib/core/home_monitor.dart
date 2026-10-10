@@ -328,6 +328,7 @@ class HomeMonitor extends ChangeNotifier {
       _notificationsAllowed = false;
   bool _lowBatteryReported = false;
   int _epoch = 0;
+  int _historyEpoch = 0;
   int? _batteryLevel, _remoteBattery;
   bool? _charging, _remoteCharging;
   DateTime? _remoteStatusAt, _lastUiUpdate, _sessionStarted;
@@ -1178,9 +1179,10 @@ class HomeMonitor extends ChangeNotifier {
     final preferences = prefs;
     if (preferences == null || _mergingInbox) return;
     _mergingInbox = true;
+    final epoch = _historyEpoch;
     try {
       final incoming = await AlertInbox.pending(preferences);
-      if (_disposed) return;
+      if (_disposed || epoch != _historyEpoch) return;
       for (final event in incoming) {
         if (!_events.any((e) => e.id == event.id)) _events.add(event);
       }
@@ -1273,6 +1275,7 @@ class HomeMonitor extends ChangeNotifier {
       // Send sequentially so the server's event grouping limit can settle.
       for (final alert in _outbox.toList()) {
         if (_disposed || !isMonitoring || !cloud!.sharing) break;
+        if (!_outbox.contains(alert)) continue;
         if (!force && !alert.due(DateTime.now())) continue;
         final event = _events.where((e) => e.id == alert.id).firstOrNull;
         // Re-check the clock on every retry. An offline alert must not wake
@@ -1903,6 +1906,7 @@ class HomeMonitor extends ChangeNotifier {
   }
 
   Future<void> clearActivity() async {
+    _historyEpoch++;
     _events.clear();
     _outbox.clear();
     await _saveOutbox();

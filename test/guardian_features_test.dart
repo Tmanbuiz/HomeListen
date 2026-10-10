@@ -11,6 +11,46 @@ import 'package:home_listen/core/sound_watch.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test(
+    'clearing history also removes queued sends and background receipts',
+    () async {
+      final at = DateTime.now();
+      const id = 'event_1234567890123456';
+      final event = ActivityEvent(
+        kind: ActivityKind.sound,
+        title: 'Possible crying',
+        room: 'Home',
+        at: at,
+        id: id,
+        delivery: AlertDelivery.queued,
+      );
+      SharedPreferences.setMockInitialValues({
+        'activity': jsonEncode([event.toJson()]),
+        'alert_outbox': jsonEncode([
+          PendingAlert(id: id, title: event.title, at: at).toJson(),
+        ]),
+        '${AlertInbox.prefix}$id': jsonEncode({
+          'roomId': 'room',
+          'event': event.toJson(),
+        }),
+      });
+      final prefs = await SharedPreferences.getInstance();
+      final monitor = HomeMonitor(prefs: prefs);
+      expect(monitor.queuedAlertCount, 1);
+      await monitor.clearActivity();
+      expect(monitor.events, isEmpty);
+      expect(monitor.queuedAlertCount, 0);
+      expect(
+        PendingAlert.restore(prefs.getString('alert_outbox'), at),
+        isEmpty,
+      );
+      expect(
+        prefs.getKeys().where((k) => k.startsWith(AlertInbox.prefix)),
+        isEmpty,
+      );
+      monitor.dispose();
+    },
+  );
   test('background alerts validate pairing, freshness and stable IDs', () async {
     final now = DateTime.now();
     final data = <String, dynamic>{
