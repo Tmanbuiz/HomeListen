@@ -16,6 +16,8 @@ import 'activity_event.dart';
 import 'alert_outbox.dart';
 import 'alert_inbox.dart';
 import 'guardian_settings.dart';
+import 'smart_home.dart';
+import 'smart_home_settings.dart';
 import 'alerts.dart';
 import 'cloud_connection.dart';
 import 'cloud_pairing.dart';
@@ -51,6 +53,39 @@ class HomeMonitor extends ChangeNotifier {
     _guardianSettings = GuardianSettings.restore(
       prefs?.getString('guardian_settings'),
       threshold: soundWatch.sensitivity,
+    );
+    _smartHomeSettings = SmartHomeSettings.restore(
+      prefs?.getString('smart_home_settings'),
+    );
+    final savedId = prefs?.getString('smart_home_device_id') ?? '';
+    _smartHomeId = RegExp(r'^[a-f0-9]{24}$').hasMatch(savedId)
+        ? savedId
+        : SmartHomeSettings.newDeviceId();
+    _houseProfile = homeProfiles.contains(prefs?.getString('house_profile'))
+        ? prefs!.getString('house_profile')!
+        : 'home';
+    _smartHome = SmartHomeIntegration(
+      deviceId: _smartHomeId,
+      health: () => smartHomeHealth,
+      roomName: () => _roomName,
+      onChanged: _notify,
+      canSend: (category, now) =>
+          category == 'test' ||
+          !_guardianSettings.suppresses(
+            category == 'loud_sound' ? 'loud sound' : category,
+            now,
+          ),
+      onCommand: (command) async {
+        if (_deviceRole != DeviceRole.home ||
+            !_smartHomeSettings.allowControls) {
+          return;
+        }
+        if (command == 'stop') {
+          await stop();
+        } else {
+          await setHouseProfile(command);
+        }
+      },
     );
     soundWatch.rules = _guardianSettings.rules;
     _outbox.addAll(
@@ -109,6 +144,9 @@ class HomeMonitor extends ChangeNotifier {
         _notify();
         return;
       }
+      if (_deviceRole == DeviceRole.home && event != null) {
+        _smartHome.event(event, _houseProfile);
+      }
       // On the home phone this is what reaches the phone you carry, even when
       // that phone is not playing any audio.
       _talker?.sendAlert(title, _roomName);
@@ -163,6 +201,10 @@ class HomeMonitor extends ChangeNotifier {
   final List<ActivityEvent> _events = [];
   final List<PendingAlert> _outbox = [];
   GuardianSettings _guardianSettings = GuardianSettings();
+  SmartHomeSettings _smartHomeSettings = const SmartHomeSettings();
+  late final SmartHomeIntegration _smartHome;
+  late final String _smartHomeId;
+  String _houseProfile = 'home';
   bool _guardianOnly = false,
       _guardianConnecting = false,
       _flushingAlerts = false,
@@ -425,6 +467,135 @@ class HomeMonitor extends ChangeNotifier {
   List<double> get levels => List.unmodifiable(_levels);
   List<ActivityEvent> get events => List.unmodifiable(_events);
   int? get batteryLevel => _batteryLevel;
+  SmartHomeSettings get smartHomeSettings => _smartHomeSettings;
+  String get smartHomeDeviceId => _smartHomeId;
+  String get smartHomeStatus => _smartHome.status;
+  String? get smartHomeProblem => _smartHome.problem;
+  bool get smartHomeConnected => _smartHome.connected;
+  int get smartHomeQueueCount => _smartHome.queued;
+  String get houseProfile => _houseProfile;
+  Map<String, Object?> get smartHomeHealth {
+    final now = DateTime.now();
+    return {
+      'monitoring': isMonitoring,
+      'microphone':
+          isMonitoring &&
+          _lastCaptureAt != null &&
+          now.difference(_lastCaptureAt!) < const Duration(seconds: 10),
+      'detector':
+          isMonitoring &&
+          soundWatch.enabled &&
+          soundWatch.ready &&
+          soundWatch.lastWindowAt != null &&
+          now.difference(soundWatch.lastWindowAt!) <
+              const Duration(seconds: 10),
+      'battery': _batteryLevel,
+      'charging': _charging == true,
+      'mode': isGuardian
+          ? 'guardian'
+          : isTalking
+          ? 'live'
+          : 'off',
+      'profile': _houseProfile,
+      'room': _roomName,
+      'updated_at_ms': now.millisecondsSinceEpoch,
+    };
+  }
+
+  Future<void> _connectSmartHome() async {
+    try {
+      await prefs?.setString('smart_home_device_id', _smartHomeId);
+      final password =
+          _smartHomeSettings.enabled && _deviceRole == DeviceRole.home
+          ? await _secure.read(key: 'smart_home_password') ?? ''
+          : '';
+      await _smartHome.configure(
+        _deviceRole == DeviceRole.home
+            ? _smartHomeSettings
+            : const SmartHomeSettings(),
+        password,
+      );
+    } catch (_) {
+      /* Optional integration never interrupts microphone monitoring. */
+    }
+  }
+
+  Future<String?> configureSmartHome(
+    SmartHomeSettings settings,
+    String password,
+  ) async {
+    if (_deviceRole != DeviceRole.home) {
+      return 'Set up smart home integration on the home phone.';
+    }
+    if (settings.enabled && settings.problem != null) return settings.problem;
+    try {
+      final secret = password.isEmpty
+          ? await _secure.read(key: 'smart_home_password') ?? ''
+          : password;
+      if (settings.enabled && secret.isEmpty) {
+        return 'Enter your broker password.';
+      }
+      if (password.isNotEmpty) {
+        await _secure.write(key: 'smart_home_password', value: password);
+      }
+      await prefs?.setString(
+        'smart_home_settings',
+        jsonEncode(settings.toJson()),
+      );
+      _smartHomeSettings = settings;
+      await prefs?.setString('smart_home_device_id', _smartHomeId);
+      await _smartHome.configure(settings, secret);
+      _notify();
+      return _smartHome.problem;
+    } catch (_) {
+      return 'Smart home settings could not be saved. Try again.';
+    }
+  }
+
+  Future<void> setHouseProfile(String value) async {
+    if (!homeProfiles.contains(value) || _deviceRole != DeviceRole.home) return;
+    _houseProfile = value;
+    await prefs?.setString('house_profile', value);
+    _smartHome.tick(force: true);
+    _notify();
+  }
+
+  Future<String?> testSmartHome() async {
+    if (!_smartHome.connected) {
+      return 'Connect your broker before sending a test event.';
+    }
+    _smartHome.event(
+      ActivityEvent(
+        kind: ActivityKind.sound,
+        title: 'Test alert',
+        room: _roomName,
+        at: DateTime.now(),
+        id: SmartHomeSettings.newDeviceId(),
+        category: 'test',
+      ),
+      _houseProfile,
+    );
+    await _smartHome.settle();
+    return _smartHome.problem;
+  }
+
+  Future<String?> openHomeAssistant() async {
+    final uri = SmartHomeSettings.assistantUri(
+      _smartHomeSettings.homeAssistantUrl,
+    );
+    if (uri == null) {
+      return 'Add your Home Assistant address in smart home settings.';
+    }
+    try {
+      await _channel.invokeMethod<bool>('openHomeAssistant', {
+        'url': uri.toString(),
+      });
+      return null;
+    } catch (_) {
+      return 'This phone could not open Home Assistant. Open its companion app.';
+    }
+  }
+
   bool? get charging => _charging;
   bool get _statusFresh =>
       _remoteStatusAt != null &&
@@ -514,6 +685,7 @@ class HomeMonitor extends ChangeNotifier {
     if (prefs?.getBool('sound_enabled') == true) {
       unawaited(setSoundEnabled(true));
     }
+    unawaited(_connectSmartHome());
     _notify();
   }
 
@@ -534,6 +706,7 @@ class HomeMonitor extends ChangeNotifier {
     }
     _deviceRole = value;
     await prefs?.setString('device_role', value.name);
+    unawaited(_connectSmartHome());
     _suppressAuto = false;
     _notify();
     unawaited(_watchTailscale());
@@ -544,6 +717,7 @@ class HomeMonitor extends ChangeNotifier {
     if (trimmed.isEmpty) return;
     _roomName = trimmed.substring(0, math.min(32, trimmed.length));
     await prefs?.setString('room_name', _roomName);
+    _smartHome.resync();
     _notify();
   }
 
@@ -794,6 +968,7 @@ class HomeMonitor extends ChangeNotifier {
   }
 
   Future<void> _refreshHealth() async {
+    _smartHome.tick();
     if (_disposed) return;
     await _mergeInbox();
     final before = _events.length;
@@ -1907,6 +2082,7 @@ class HomeMonitor extends ChangeNotifier {
 
   Future<void> clearActivity() async {
     _historyEpoch++;
+    _smartHome.clearPending();
     _events.clear();
     _outbox.clear();
     await _saveOutbox();
@@ -1921,6 +2097,7 @@ class HomeMonitor extends ChangeNotifier {
       .replaceFirst('Exception: ', '');
   Future<void> stop() async {
     _epoch++;
+    _smartHome.clearPending();
     _suppressAuto = true;
     _wantListening = false;
     final active = isActive;
@@ -1941,6 +2118,7 @@ class HomeMonitor extends ChangeNotifier {
     soundWatch.reset();
     _levels.fillRange(0, _levels.length, 0.03);
     if (active) _addEvent(ActivityKind.session, 'Monitoring stopped');
+    _smartHome.tick(force: true);
     _notify();
   }
 
@@ -1954,6 +2132,7 @@ class HomeMonitor extends ChangeNotifier {
     unawaited(stop().whenComplete(() => _recorderInstance?.dispose()));
     unawaited(soundWatch.dispose());
     unawaited(_cloud?.close());
+    unawaited(_smartHome.dispose());
     super.dispose();
   }
 }

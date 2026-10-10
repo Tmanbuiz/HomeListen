@@ -16,6 +16,7 @@ This new repository builds on the owner's [PhoneListen](https://github.com/Tmanb
 - Android FCM and iPhone Home Screen Web Push, including alerts without a live audio connection.
 - Cloudflare Worker API and web listener on one HTTPS address.
 - Optional Tailscale mode for native Android/iOS listening.
+- Optional Home Assistant integration through MQTT 5/Mosquitto, with sound events, separate capture/detector health, House modes and an opt-in remote Stop. Matter devices respond through Home Assistant automations; setup and ready-to-copy blueprints are in [Smart home](docs/SMART_HOME.md).
 - Automated API, listener, rules, Flutter interface and protocol checks; GitHub Actions produces Android APK artifacts.
 
 Credentials are blank. Follow [SETUP.md](SETUP.md) to deploy your server and enter its address in the app.
@@ -104,6 +105,6 @@ iOS can suspend browser WebRTC/background audio. Keep the iPhone app open for li
 
 Battery restrictions, force-stop, internet loss or denied notifications can interrupt monitoring. Force-stop does not restart capture. Sound detection can miss or mistake sounds; this is not an emergency alarm.
 
-Actions APKs use preview/debug signing. Configure your own release key for stable updates/distribution. Never commit service-account JSON, VAPID private keys, TURN keys or signing keys.
+Ordinary Actions APKs use preview/debug signing. [Permanent release signing](docs/ANDROID_RELEASE.md) includes local configuration and a manual signed-release workflow for your own key. Never commit service-account JSON, VAPID private keys, TURN keys or signing keys.
 
 YAMNet provenance/license are in [assets/models](assets/models). The download helper verifies the model checksum.

@@ -32,6 +32,11 @@ jobs:
       - run: npm run check && npm test && npm run build
         working-directory: viewer
       - run: npm run test:rules
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install PyYAML==6.0.3 Jinja2==3.1.6
+      - run: python tool/check_smart_home_blueprints.py
       - run: npm run build
         working-directory: backend
         env:
@@ -52,14 +57,38 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - run: python3 tool/fetch_sound_model.py
       - run: flutter pub get
+      - name: Check integration source formatting
+        run: |
+          dart format --output=none --set-exit-if-changed lib/core/smart_home.dart lib/core/smart_home_settings.dart lib/core/smart_home_transport.dart lib/core/home_monitor.dart lib/core/sound_watch.dart lib/ui/smart_home_panel.dart lib/ui/home_monitor_page.dart test/smart_home_test.dart test/smart_home_interface_test.dart test/mqtt_broker_test.dart test/barking_false_alarm_test.dart
       - run: flutter analyze
       - run: flutter test
+      - name: Start authenticated Mosquitto test broker
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y mosquitto mosquitto-clients
+          sudo mosquitto_passwd -b -c /etc/mosquitto/homelisten-ci-passwords homelisten-ci homelisten-ci-only
+          sudo chown mosquitto:mosquitto /etc/mosquitto/homelisten-ci-passwords
+          printf '%s\n' 'listener 1884 127.0.0.1' 'allow_anonymous false' 'password_file /etc/mosquitto/homelisten-ci-passwords' > "$RUNNER_TEMP/homelisten-ci.conf"
+          sudo install -m 644 "$RUNNER_TEMP/homelisten-ci.conf" /etc/mosquitto/homelisten-ci.conf
+          sudo mosquitto -c /etc/mosquitto/homelisten-ci.conf -v > "$RUNNER_TEMP/homelisten-ci.log" 2>&1 &
+          for attempt in $(seq 1 30); do
+            if mosquitto_pub -h 127.0.0.1 -p 1884 -u homelisten-ci -P homelisten-ci-only -V mqttv5 -t homelisten-ci/ready -m ready >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 0.2
+          done
+          cat "$RUNNER_TEMP/homelisten-ci.log"
+          exit 1
+      - name: Check MQTT 5 against Mosquitto
+        run: flutter test test/mqtt_broker_test.dart
+        env:
+          HOME_LISTEN_TEST_MQTT: 'true'
       # Build the ARM64 APK first; it covers current Android phones and avoids
       # compiling three native ABIs before there is an installable artifact.
       - run: flutter build apk --release --target-platform android-arm64 --split-per-abi
       - uses: actions/upload-artifact@v4
         with:
-          name: homelisten-android-apks
+          name: homelisten-android-preview-apks
           retention-days: 7
           path: build/app/outputs/flutter-apk/*.apk
           if-no-files-found: error

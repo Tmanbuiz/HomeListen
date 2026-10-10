@@ -76,6 +76,14 @@ void main() {
       expect(g.accept('barking', t0.add(const Duration(seconds: 20))), isFalse);
     });
 
+    test('stopping or recalibrating discards pre-reset bark evidence', () {
+      final g = gate();
+      expect(g.accept('barking', t0), isFalse);
+      g.reset(clearBursts: true);
+      expect(g.accept('barking', t0.add(const Duration(seconds: 2))), isFalse);
+      expect(g.accept('barking', t0.add(const Duration(seconds: 4))), isTrue);
+    });
+
     test(
       'after an alert it needs a fresh pair, and the cooldown still holds',
       () {

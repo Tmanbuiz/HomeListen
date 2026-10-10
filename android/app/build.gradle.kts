@@ -1,7 +1,24 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+val releaseKeyProperties = Properties()
+val releaseKeyFile = rootProject.file("key.properties")
+if (releaseKeyFile.exists()) releaseKeyFile.inputStream().use { releaseKeyProperties.load(it) }
+fun releaseKey(name: String, environment: String): String? =
+    System.getenv(environment)?.takeIf { it.isNotEmpty() } ?: releaseKeyProperties.getProperty(name)
+val releaseKeyPath = releaseKey("storeFile", "HOME_LISTEN_KEYSTORE_FILE")
+val releaseKeyPassword = releaseKey("storePassword", "HOME_LISTEN_STORE_PASSWORD")
+val releaseKeyAlias = releaseKey("keyAlias", "HOME_LISTEN_KEY_ALIAS")
+val releaseAliasPassword = releaseKey("keyPassword", "HOME_LISTEN_KEY_PASSWORD")
+val releaseKeyReady = listOf(releaseKeyPath, releaseKeyPassword, releaseKeyAlias, releaseAliasPassword)
+    .all { !it.isNullOrEmpty() } && rootProject.file(releaseKeyPath!!).isFile
+if (System.getenv("HOME_LISTEN_REQUIRE_RELEASE_SIGNING") == "true" && !releaseKeyReady) {
+    throw GradleException("A permanent Home Listen release key is required. See docs/ANDROID_RELEASE.md.")
 }
 
 android {
@@ -32,11 +49,17 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        if (releaseKeyReady) create("permanentRelease") {
+            storeFile = rootProject.file(releaseKeyPath!!)
+            storePassword = releaseKeyPassword
+            keyAlias = releaseKeyAlias
+            keyPassword = releaseAliasPassword
+        }
+    }
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName(if (releaseKeyReady) "permanentRelease" else "debug")
         }
     }
 }

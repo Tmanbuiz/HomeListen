@@ -93,6 +93,28 @@ export class FirestoreStore {
   async delete(path) {
     await this.call(":commit", { method: "POST", body: JSON.stringify({ writes: [{ delete: this.name + path }] }) });
   }
+  async expireDevice(id, uid, version) {
+    const devicePath = `rooms/${id}/devices/${uid}`;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const device = await this.get(devicePath);
+      if (!device || device.version !== version) return false;
+      const room = await this.get(`rooms/${id}`);
+      if (!room) return false;
+      const watchers = { ...room.data.watchers };
+      delete watchers[uid];
+      try {
+        // Both preconditions belong to one commit: a refreshed registration
+        // must survive an expired response for an older token.
+        await this.call(":commit", { method: "POST", body: JSON.stringify({ writes: [
+          { delete: this.name + devicePath, currentDocument: { updateTime: version } },
+          { update: { name: this.name + `rooms/${id}`, fields: fields({ watchers }) },
+            updateMask: { fieldPaths: ["watchers"] }, currentDocument: { updateTime: room.version } }
+        ] }) });
+        return true;
+      } catch (error) { if (error.status !== 409 || attempt === 4) throw error; }
+    }
+    return false;
+  }
   async expired(collectionId, now, limit = 100) {
     const result = await this.call(":runQuery", {
       method: "POST",

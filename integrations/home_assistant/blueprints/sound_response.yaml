@@ -1,0 +1,77 @@
+blueprint:
+  name: Home Listen - fresh sound response
+  description: >-
+    Respond to selected local sound events. Rejects quiet, stale and duplicate events.
+    Create a separate Text helper with maximum length 255 for each automation.
+    Household actions can target Matter devices already paired to Home Assistant.
+  domain: automation
+  homeassistant:
+    min_version: "2024.10.0"
+  input:
+    sound_entity:
+      name: Home Listen sound event
+      selector:
+        entity:
+          filter:
+            - domain: event
+              integration: mqtt
+    categories:
+      name: Sounds to respond to
+      default: [crying]
+      selector:
+        select:
+          multiple: true
+          options: [crying, barking, knocking, loud_sound, test]
+    profiles:
+      name: House modes
+      default: [home, away, night]
+      selector:
+        select:
+          multiple: true
+          options: [home, away, night]
+    dedup_helper:
+      name: Recent event IDs
+      description: A dedicated Text helper with maximum length 255. Do not share it between automations.
+      selector:
+        entity:
+          filter:
+            - domain: input_text
+    response:
+      name: Household response
+      description: Choose a light, notification, scene or another Home Assistant action.
+      selector:
+        action:
+mode: queued
+max: 10
+max_exceeded: silent
+variables:
+  selected_categories: !input categories
+  selected_profiles: !input profiles
+  recent_ids: !input dedup_helper
+triggers:
+  - trigger: state
+    entity_id: !input sound_entity
+    not_to: [unknown, unavailable]
+actions:
+  - variables:
+      sound: "{{ trigger.to_state.attributes }}"
+      remembered: "{{ states(recent_ids) | from_json([]) }}"
+  # Evaluate when the queued action actually runs, including after slow actions.
+  - condition: template
+    value_template: >-
+      {%- set age = as_timestamp(now()) * 1000 - (sound.get('observed_at_ms', 0) | float(0)) -%}
+      {%- set event_id = sound.get('event_id', '') | string -%}
+      {{ sound.get('event_type') in selected_categories
+         and sound.get('profile') in selected_profiles
+         and sound.get('quiet') == false
+         and 0 < event_id | length <= 24
+         and event_id not in remembered
+         and -30000 <= age < 60000 }}
+  - action: input_text.set_value
+    target:
+      entity_id: !input dedup_helper
+    data:
+      value: "{{ (remembered[-7:] + [sound.get('event_id')]) | to_json }}"
+  - choose:
+      - conditions: "{{ true }}"
+        sequence: !input response

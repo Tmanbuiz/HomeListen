@@ -1,0 +1,14 @@
+# Standalone private-LAN example. Change the address to your hub's private IP.
+# Do not use this plaintext listener on a public interface or forward its port.
+listener 1883 192.168.1.20
+allow_anonymous false
+password_file /etc/mosquitto/passwd
+acl_file /etc/mosquitto/acl
+persistence true
+persistence_location /var/lib/mosquitto/
+
+# For TLS use a separate listener, plus a certificate trusted by Android:
+# listener 8883
+# certfile /etc/mosquitto/certs/fullchain.pem
+# keyfile /etc/mosquitto/certs/privkey.pem
+# The app does not bypass certificate checks or expose a self-signed-cert toggle.

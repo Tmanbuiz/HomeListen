@@ -79,8 +79,8 @@ export async function deliverAlert({ store, id, uid, room, eventId, kind, title,
         const response = await push(device.data, payload, env);
         if (response.sent) outcome = 'sent';
         else if (response.expired) {
-          outcome = 'expired';
-          await store.delete(devicePath);
+          const removed = await store.expireDevice(id, viewerUid, device.version);
+          outcome = removed ? 'expired' : 'pending';
         }
       } catch { /* A failed recipient stays pending, never "delivered". */ }
     }
