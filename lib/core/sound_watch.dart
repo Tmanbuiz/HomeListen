@@ -20,10 +20,21 @@ class SoundGate {
     this.requiredHits = 2,
     this.cooldown = const Duration(seconds: 30),
     this.immediate = const {},
+    this.burst = const {},
   });
   final int requiredHits;
   final Duration cooldown;
   final Set<String> immediate;
+
+  /// Categories that need this many separate detections close together, such as
+  /// two distinct barks, before alerting. One mislabeled sound or a single bark
+  /// does not fire. Two windows only 0.5 s apart can contain the same sound
+  /// (they overlap by half), so hits must be [burstGap] apart to count as
+  /// separate.
+  final Map<String, int> burst;
+  static const burstGap = Duration(milliseconds: 700);
+  static const burstSpan = Duration(seconds: 8);
+  final Map<String, List<DateTime>> _recent = {};
   final Map<String, DateTime> _last = {};
   Map<String, SoundRule> rules = {};
   DateTime? _candidateAt;
@@ -35,6 +46,12 @@ class SoundGate {
     if (category == null) {
       reset();
       return false;
+    }
+    if (burst.containsKey(category)) {
+      final hits = _recent.putIfAbsent(category, () => []);
+      hits.removeWhere((t) => at.difference(t) > burstSpan);
+      if (hits.isEmpty || at.difference(hits.last) >= burstGap) hits.add(at);
+      if (hits.length < burst[category]!) return false;
     }
     if (category != _candidate) _candidateAt = at;
     _hits = category == _candidate ? _hits + 1 : 1;
@@ -55,6 +72,7 @@ class SoundGate {
       return false;
     }
     _last[category] = at;
+    _recent[category]?.clear();
     acceptedSpanMs = at.difference(_candidateAt!).inMilliseconds;
     _hits = 0;
     _candidateAt = at;
@@ -79,6 +97,14 @@ const Map<String, Set<String>> soundGroups = {
   'barking': {'Bark', 'Bow-wow', 'Yip', 'Howl', 'Dog', 'Growling'},
   'knocking': {'Knock', 'Doorbell', 'Ding-dong', 'Tap'},
 };
+
+/// "Dog", "Growling" and "Howl" are broad: they light up for panting, whining,
+/// toys and other sounds a model confuses with a dog, so they have to clear a
+/// higher bar than a specific bark. And if something else clearly outranks the
+/// dog classes in the window, a low dog score is probably a mislabel.
+const Set<String> weakBarkClasses = {'Howl', 'Dog', 'Growling'};
+const double weakBarkMargin = 0.2;
+const double outrankedBarkCeiling = 0.6;
 
 /// The loudest 20 ms frame in a window must beat this for "loud sound", unless
 /// the room's calibrated noise is high enough to need more.
@@ -128,6 +154,7 @@ class SoundWatch {
   final List<double> _window = [];
   late final SoundGate _gate = SoundGate(
     immediate: {'barking', 'knocking', 'loud sound'},
+    burst: {'barking': 2},
   );
   bool _busy = false;
   bool _disposed = false;
@@ -292,9 +319,19 @@ class SoundWatch {
     soundGroups.forEach((group, names) {
       if (!categories.contains(group)) return;
       for (var i = 0; i < count; i++) {
-        if (names.contains(labels[i]) &&
-            scores[i] > (thresholds?[group] ?? sensitivity) &&
-            scores[i] > best) {
+        if (!names.contains(labels[i])) continue;
+        var needed = thresholds?[group] ?? sensitivity;
+        if (group == 'barking') {
+          if (weakBarkClasses.contains(labels[i])) {
+            needed = math.min(0.9, needed + weakBarkMargin);
+          }
+          // Another sound dominates the window: only a confident bark counts.
+          if (!names.contains(labels[topIndex]) &&
+              scores[i] < outrankedBarkCeiling) {
+            continue;
+          }
+        }
+        if (scores[i] > needed && scores[i] > best) {
           best = scores[i];
           category = group;
         }
