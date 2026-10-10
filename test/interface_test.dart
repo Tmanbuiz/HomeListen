@@ -22,7 +22,9 @@ void main() {
     expect(find.text('Guard this room'), findsOneWidget);
     await tester.tap(find.text('Live + Guardian'));
     await tester.pumpAndSettle();
-    expect(find.text('Share this room'), findsOneWidget);
+    expect(find.text('Share this room'), findsWidgets);
+    expect(find.text('Guard this room'), findsNothing);
+    expect(prefs.getBool('guardian_only'), isFalse);
     expect(tester.takeException(), isNull);
     await tester.tap(find.text('Guardian').first);
     await tester.pumpAndSettle();
