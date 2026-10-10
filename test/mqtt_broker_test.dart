@@ -132,8 +132,13 @@ void main() {
       expect(received.where((m) => m.topic == topics.events).length, 1);
       // Retained discovery is available to a new subscription; events are absent.
       received.clear();
+      final unsubscribed = <String>{};
+      observer.onUnsubscribed = (subscription) {
+        unsubscribed.add(subscription.topic.rawTopic!);
+      };
       observer.unsubscribeStringTopic('homeassistant/#');
       observer.unsubscribeStringTopic('${topics.base}/#');
+      await until(() => unsubscribed.length == 2);
       subscribed.clear();
       observer.subscribe('homeassistant/#', MqttQos.atLeastOnce);
       observer.subscribe('${topics.base}/#', MqttQos.atLeastOnce);
