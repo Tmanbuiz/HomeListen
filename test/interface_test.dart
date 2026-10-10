@@ -19,15 +19,13 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
     await tester.pumpWidget(HomeListenApp(prefs: prefs));
-    expect(find.text('Guard this room'), findsOneWidget);
-    await tester.tap(find.text('Live + Guardian'));
-    await tester.pumpAndSettle();
     expect(find.text('Share this room'), findsWidgets);
     expect(find.text('Guard this room'), findsNothing);
-    expect(prefs.getBool('guardian_only'), isFalse);
-    expect(tester.takeException(), isNull);
     await tester.tap(find.text('Guardian').first);
     await tester.pumpAndSettle();
+    expect(find.text('Guard this room'), findsOneWidget);
+    expect(prefs.getBool('guardian_only'), isTrue);
+    expect(tester.takeException(), isNull);
     for (final label in ['Activity', 'Settings']) {
       await tester.tap(
         find.descendant(

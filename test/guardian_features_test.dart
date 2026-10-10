@@ -226,11 +226,12 @@ void main() {
       SharedPreferences.setMockInitialValues({'device_role': 'home'});
       final prefs = await SharedPreferences.getInstance();
       final monitor = HomeMonitor(prefs: prefs);
-      expect(monitor.guardianOnly, isTrue);
+      // Live listening stays the default; Guardian-only is something to opt in to.
+      expect(monitor.guardianOnly, isFalse);
       expect(monitor.isMonitoring, isFalse);
-      await monitor.setGuardianOnly(false);
+      await monitor.setGuardianOnly(true);
       final restored = HomeMonitor(prefs: prefs);
-      expect(restored.guardianOnly, isFalse);
+      expect(restored.guardianOnly, isTrue);
       expect(restored.isMonitoring, isFalse);
       await restored.setQuietHours(enabled: true, start: 1200, end: 420);
       expect(

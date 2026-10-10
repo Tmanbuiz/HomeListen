@@ -25,7 +25,7 @@
 5. Configure the same HTTPS server on both phones, pair from Devices and enable alerts on the away phone. Send a test alert from home and check Activity and the away phone separately.
 6. Tune the selected sounds and quiet hours in Settings. Calibrate the room while monitoring.
 
-Guardian defaults on for the home phone. Upgrading/relaunching does not start capture. Local detection works without a server; internet and a deployed backend are required for remote push. No new paid API, TURN relay, hosted classifier or speech provider is enabled by these changes. Oralyvo retains its own sign-in, settings, limits and provider costs.
+Live + Guardian stays the default for the home phone, so remote live listening keeps working after the upgrade; choose Guardian to turn live listening off. Upgrading/relaunching does not start capture. Local detection works without a server; internet and a deployed backend are required for remote push. No new paid API, TURN relay, hosted classifier or speech provider is enabled by these changes. Oralyvo retains its own sign-in, settings, limits and provider costs.
 
 Actions artifacts use the repository's existing preview/debug signing configuration. A different preview signing key may require uninstalling the previous build, which removes local pairing/history. Configure a persistent release signing key before distributing stable upgrades.
 

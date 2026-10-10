@@ -47,7 +47,7 @@ class HomeMonitor extends ChangeNotifier {
     _events.addAll(ActivityEvent.restore(prefs?.getString('activity')));
     soundWatch.noiseFloor = prefs?.getDouble('noise_floor') ?? 0.015;
     soundWatch.sensitivity = prefs?.getDouble('sound_threshold') ?? 0.4;
-    _guardianOnly = prefs?.getBool('guardian_only') ?? true;
+    _guardianOnly = prefs?.getBool('guardian_only') ?? false;
     _guardianSettings = GuardianSettings.restore(
       prefs?.getString('guardian_settings'),
       threshold: soundWatch.sensitivity,
@@ -163,7 +163,7 @@ class HomeMonitor extends ChangeNotifier {
   final List<ActivityEvent> _events = [];
   final List<PendingAlert> _outbox = [];
   GuardianSettings _guardianSettings = GuardianSettings();
-  bool _guardianOnly = true,
+  bool _guardianOnly = false,
       _guardianConnecting = false,
       _flushingAlerts = false,
       _mergingInbox = false;
