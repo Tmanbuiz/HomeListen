@@ -1125,7 +1125,7 @@ class HomeMonitor extends ChangeNotifier {
   Future<void> _startCloudHome() async {
     if (isActive || _busy || _disposed) return;
     if (!Platform.isAndroid) {
-      _error = 'Live listening from the home phone needs Android for now. On an iPhone, use Guardian (sound alerts only).';
+      _error = 'Live home sharing needs Android. On an iPhone, use Guardian.';
       _notify();
       return;
     }
