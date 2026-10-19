@@ -384,7 +384,8 @@ class HomeMonitor extends ChangeNotifier {
   bool get isTalking => _role == MonitorRole.talking;
   bool get isGuardian => _role == MonitorRole.guardian;
   bool get isMonitoring => isTalking || isGuardian;
-  bool get guardianOnly => _guardianOnly;
+  bool get liveHomeAvailable => !(Platform.isIOS && cloudMode);
+  bool get guardianOnly => _guardianOnly || !liveHomeAvailable;
   GuardianSettings get guardianSettings => _guardianSettings;
   int get queuedAlertCount => _outbox.length;
   bool get cloudAlertsReady =>
@@ -1020,7 +1021,7 @@ class HomeMonitor extends ChangeNotifier {
   }
 
   Future<void> startTalking() async {
-    if (_guardianOnly && _deviceRole == DeviceRole.home) {
+    if (guardianOnly && _deviceRole == DeviceRole.home) {
       await startGuardian();
       return;
     }
