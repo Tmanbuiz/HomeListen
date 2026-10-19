@@ -384,10 +384,7 @@ class HomeMonitor extends ChangeNotifier {
   bool get isTalking => _role == MonitorRole.talking;
   bool get isGuardian => _role == MonitorRole.guardian;
   bool get isMonitoring => isTalking || isGuardian;
-  /// An iPhone can be the cloud home phone for Guardian alerts only. Live
-  /// sharing from the home phone needs the Android capture service.
-  bool get liveHomeAvailable => !(Platform.isIOS && cloudMode);
-  bool get guardianOnly => _guardianOnly || !liveHomeAvailable;
+  bool get guardianOnly => _guardianOnly;
   GuardianSettings get guardianSettings => _guardianSettings;
   int get queuedAlertCount => _outbox.length;
   bool get cloudAlertsReady =>
@@ -1023,7 +1020,7 @@ class HomeMonitor extends ChangeNotifier {
   }
 
   Future<void> startTalking() async {
-    if (guardianOnly && _deviceRole == DeviceRole.home) {
+    if (_guardianOnly && _deviceRole == DeviceRole.home) {
       await startGuardian();
       return;
     }
