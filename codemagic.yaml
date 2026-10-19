@@ -60,3 +60,43 @@ workflows:
         script: flutter build apk --release --split-per-abi
     artifacts:
       - build/app/outputs/flutter-apk/*.apk
+
+  ios-testflight:
+    name: iOS signed build to TestFlight
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    # Needs, in Codemagic (never in this repo):
+    #  1. Teams > Integrations > App Store Connect: add an API key named
+    #     "homelisten-asc" (Users and Access > Integrations in App Store Connect).
+    #  2. The app record com.wiantribe.homeListen created in App Store Connect.
+    # Codemagic then creates the distribution certificate and App Store profile.
+    integrations:
+      app_store_connect: homelisten-asc
+    environment:
+      <<: *env_versions
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.wiantribe.homeListen
+    scripts:
+      - name: Fetch verified sound model
+        script: python3 tool/fetch_sound_model.py
+      - name: Install dependencies
+        script: flutter pub get
+      - name: Static analysis
+        script: flutter analyze
+      - name: Unit tests
+        script: flutter test
+      - name: Install CocoaPods
+        script: find . -name "Podfile" -execdir pod install \;
+      - name: Apply signing profile
+        script: xcode-project use-profiles
+      - name: Build signed .ipa
+        # PROJECT_BUILD_NUMBER counts up on every Codemagic build of this app,
+        # so each upload has a higher build number than the last.
+        script: flutter build ipa --release --export-options-plist=/Users/builder/export_options.plist --build-number=$PROJECT_BUILD_NUMBER
+    artifacts:
+      - build/ios/ipa/*.ipa
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: false

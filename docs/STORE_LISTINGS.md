@@ -10,10 +10,10 @@ Sound detection is not an emergency alarm. Keep that wording in every listing.
 
 | Item | Status |
 | --- | --- |
-| Privacy policy page | **Does not exist yet.** Both stores require a public URL. Needs to be written and hosted (for example `https://homelisten.oralyvo.app/privacy`). Ask Claude to draft it. |
-| Support page / email | **Does not exist yet.** Both stores require one. A mailbox you read is enough for Play; Apple needs a support URL. |
+| Privacy policy page | Written: `viewer/public/privacy.html`, served at `https://homelisten.oralyvo.app/privacy` after the Worker is deployed. Have it reviewed before you rely on it; Claude is not a lawyer. |
+| Support page | Written: `https://homelisten.oralyvo.app/support`. **Replace `[ADD SUPPORT EMAIL BEFORE PUBLISHING]` in `viewer/public/support.html` with a mailbox you read, then deploy.** |
 | iPhone cloud mode | **Not built.** The README says native iOS cloud mode is not included; the iOS app only does Tailscale mode. A public App Store submission of the current build would very likely be rejected (Guideline 4.2, minimum functionality, and 2.1, a reviewer cannot try it). TestFlight *internal* testing of the current build is fine. |
-| iOS signing | `codemagic.yaml` makes an **unsigned** `.ipa`. TestFlight needs a signed build uploaded to App Store Connect, so Codemagic needs your App Store Connect API key and an App Store distribution profile. |
+| iOS signing | `ios-testflight` workflow added to `codemagic.yaml`. It needs the App Store Connect API key added in Codemagic as `homelisten-asc` and the app record created first (steps below). The older `ios-unsigned` workflow cannot go to TestFlight. |
 | Android signing | Needs your permanent key (`docs/ANDROID_RELEASE.md`). Play also needs an `.aab`, which the signed workflow already makes. |
 | Screenshots | Not in the repo. Needs real screenshots from your phones. |
 | Android foreground service | Play requires a declaration and a short demo video for `FOREGROUND_SERVICE_MICROPHONE` (see below). |
@@ -143,11 +143,16 @@ Console: https://appstoreconnect.apple.com → **Apps → + → New App**.
    SKU `homelisten-ios`.
 2. **Capabilities** on the App ID: Push Notifications (for the future cloud
    mode). Background modes `audio` is already in `Info.plist`.
-3. Build upload: in Codemagic add the App Store Connect integration (API key:
-   Users and Access → Integrations → App Store Connect API → generate), set the
-   workflow to code-sign with an App Store profile and publish to TestFlight.
-   The current workflow produces only an unsigned `.ipa` and cannot do this.
-   Say if you want a signed `ios-testflight` workflow added.
+3. In App Store Connect: Users and Access → Integrations → App Store Connect
+   API → generate a key (role App Manager) and download it once.
+4. In Codemagic: Teams → Integrations → App Store Connect → add that key and
+   name it exactly `homelisten-asc`. Then run the **iOS signed build to
+   TestFlight** workflow. Codemagic creates the certificate and profile, builds
+   a signed `.ipa` and uploads it. After Apple finishes processing (about 15
+   minutes), add yourself under TestFlight → Internal Testing.
+5. App Store Connect may ask the export-compliance question. Home Listen uses
+   standard encryption only (HTTPS and WebRTC); answer that it uses encryption
+   exempt from export documentation.
 
 ### TestFlight (internal testing)
 
