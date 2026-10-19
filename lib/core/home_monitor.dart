@@ -1122,7 +1122,7 @@ class HomeMonitor extends ChangeNotifier {
   Future<void> _startCloudHome() async {
     if (isActive || _busy || _disposed) return;
     if (!Platform.isAndroid) {
-      _error = 'Use Android as the home phone. iPhone can listen through the web app.';
+      _error = 'Use Android as the home phone. An iPhone can listen.';
       _notify();
       return;
     }

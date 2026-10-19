@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { verifyFirebaseToken, authenticate } from "../src/security.js";
+import { verifyFirebaseToken, authenticate, publicConfig } from "../src/security.js";
 const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const jwk = { ...publicKey.export({ format: "jwk" }), kid: "test-home-key" };
 const now = 1000000000000;
@@ -25,4 +25,14 @@ test("rejects forged, expired, wrong-project, wrong-issuer and future tokens", a
 });
 test("requires a bearer token", async () => {
   await assert.rejects(authenticate(new Request("https://home.example"), { FIREBASE_PROJECT_ID: "demo-home" }), { status: 401 });
+});
+
+test("public config exposes the iPhone Firebase app ID without leaking secrets", () => {
+  const env = { FIREBASE_PROJECT_ID: "p", FIREBASE_API_KEY: "k", FIREBASE_WEB_APP_ID: "w",
+    FIREBASE_ANDROID_APP_ID: "a", FIREBASE_IOS_APP_ID: "i", FIREBASE_SERVICE_ACCOUNT: "secret" };
+  const { firebase } = publicConfig(env);
+  assert.equal(firebase.iosAppId, "i");
+  assert.equal(firebase.androidAppId, "a");
+  assert.equal(JSON.stringify(publicConfig(env)).includes("secret"), false);
+  assert.equal(publicConfig({ ...env, FIREBASE_IOS_APP_ID: undefined }).firebase.iosAppId, "");
 });

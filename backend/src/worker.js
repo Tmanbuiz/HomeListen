@@ -325,6 +325,10 @@ export async function sendDevicePush(device, payload, env) {
               tag: payload.id,
               sound: "default"
             }
+          },
+          apns: {
+            headers: { "apns-priority": "10" },
+            payload: { aps: { sound: "default", "thread-id": payload.roomId } }
           }
         } })
       }
@@ -752,4 +756,4 @@ export function createWorker(overrides = {}) {
 }
 
 export default createWorker();
-
+
