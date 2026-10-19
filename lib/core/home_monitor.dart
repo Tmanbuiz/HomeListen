@@ -1203,20 +1203,7 @@ class HomeMonitor extends ChangeNotifier {
         );
       }
       if (epoch != _epoch || _disposed) return;
-      // Android shows its persistent microphone notification with a Stop
-      // action. An iPhone has no such notification; iOS shows its own
-      // recording indicator for as long as the microphone is open, and the
-      // Stop button stays on this screen.
-      if (Platform.isAndroid) {
-        final shown = await _channel.invokeMethod<bool>('start', {
-          'text': 'Guardian on — local sound detection • live listening off',
-        });
-        if (shown != true) {
-          throw StateError(
-            'Allow visible Home Listen notifications before starting Guardian.',
-          );
-        }
-      }
+      await _showGuardianNotice();
       if (epoch != _epoch || _disposed) return;
       final pcm = await _recorder.startStream(
         const RecordConfig(
@@ -1262,6 +1249,21 @@ class HomeMonitor extends ChangeNotifier {
     } finally {
       _busy = false;
       _notify();
+    }
+  }
+
+  /// Android shows a persistent microphone notification with a Stop action.
+  /// An iPhone has none: iOS shows its own recording indicator while the
+  /// microphone is open, and Stop stays on the Home screen.
+  Future<void> _showGuardianNotice() async {
+    if (!Platform.isAndroid) return;
+    final shown = await _channel.invokeMethod<bool>('start', {
+      'text': 'Guardian on — local sound detection • live listening off',
+    });
+    if (shown != true) {
+      throw StateError(
+        'Allow visible Home Listen notifications before starting Guardian.',
+      );
     }
   }
 
