@@ -85,7 +85,7 @@ class HomeModeSelector extends StatelessWidget {
           ChoiceChip(
             label: const Text('Live + Guardian'),
             selected: !monitor.guardianOnly,
-            onSelected: monitor.busy
+            onSelected: monitor.busy || !monitor.liveHomeAvailable
                 ? null
                 : (_) => monitor.setGuardianOnly(false),
           ),

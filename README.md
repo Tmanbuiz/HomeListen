@@ -101,7 +101,7 @@ Private documents hold hashed invitations and push destinations. Clients cannot 
 
 Automated checks do not replace testing on your phones. Check Android capture with the screen closed, alerts with no live listeners, iPhone push with its app closed, mobile handover, revocation and Stop.
 
-iOS can suspend browser WebRTC/background audio. Keep the iPhone app open for live listening; use push for unattended alerts. Hardware volume buttons may replace the page slider. The native iPhone app listens in cloud mode on the same server and API as Android (alerts through Apple push, live listening, QR or link pairing). The iPhone is a listener only; the home phone must be Android. Tailscale mode is still available.
+iOS can suspend browser WebRTC/background audio. Keep the iPhone app open for live listening; use push for unattended alerts. Hardware volume buttons may replace the page slider. The native iPhone app listens in cloud mode on the same server and API as Android (alerts through Apple push, live listening, QR or link pairing). An iPhone can also be the home phone in Guardian mode (sound alerts only, no live audio). Live + Guardian from the home phone still needs Android. On an iPhone home phone iOS shows its own orange recording indicator while the microphone is open, and Stop is on the Home screen; iOS has no persistent notification with a Stop action. Keep the app open or in the background with the phone charging, and test with the screen locked before relying on it. Tailscale mode is still available.
 
 ### iPhone app setup (one time)
 
