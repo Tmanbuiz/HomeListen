@@ -102,6 +102,7 @@ class HomeMonitor extends ChangeNotifier {
     _pruneActivity();
     _reduceHiss = prefs?.getBool('reduce_hiss') ?? true;
     _homeShowsAlerts = prefs?.getBool('home_shows_alerts') ?? false;
+    _recordingPaused = prefs?.getBool('recording_paused') ?? false;
     _autoMode = prefs?.getString('auto_mode') == 'alerts' ? 'alerts' : 'listen';
     _connectionMode = prefs?.getString('connection_mode') == 'cloud'
         ? ConnectionMode.cloud
@@ -240,8 +241,8 @@ class HomeMonitor extends ChangeNotifier {
       soundWatch.categories.any(
         (name) => _guardianSettings.rules[name]?.recordAudio == true,
       );
-  bool get _canRecord =>
-      _deviceRole == DeviceRole.away && isListening && _recordingOptIn;
+  bool get recordingArmed => _deviceRole == DeviceRole.away && _recordingOptIn;
+  bool get _canRecord => recordingArmed && isListening;
 
   Future<void> loadRecordings() async {
     if (_deviceRole != DeviceRole.away) return;
@@ -784,7 +785,7 @@ class HomeMonitor extends ChangeNotifier {
     } catch (_) {
       _error = 'Secure pairing storage could not be opened. Restart the app before pairing or sharing.';
     }
-    if (_deviceRole == DeviceRole.away) await loadRecordings();
+    if (_deviceRole == DeviceRole.away) unawaited(loadRecordings());
     await _refreshHealth();
     if (cloudMode && cloudServer.isNotEmpty) {
       unawaited(
@@ -830,7 +831,7 @@ class HomeMonitor extends ChangeNotifier {
     }
     _deviceRole = value;
     await prefs?.setString('device_role', value.name);
-    if (value == DeviceRole.away) await loadRecordings();
+    if (value == DeviceRole.away) unawaited(loadRecordings());
     unawaited(_connectSmartHome());
     _suppressAuto = false;
     _notify();
@@ -1444,12 +1445,17 @@ class HomeMonitor extends ChangeNotifier {
 
   Future<void> setSoundRule(String category, SoundRule rule) async {
     if (!guardianCategories.contains(category)) return;
+    final enableRecording = rule.recordAudio &&
+        _guardianSettings.rules[category]?.recordAudio != true;
     _guardianSettings = _guardianSettings.copyWith(
       rules: {..._guardianSettings.rules, category: rule},
     );
     soundWatch.rules = _guardianSettings.rules;
     soundWatch.reset();
-    if (rule.recordAudio) _recordingPaused = false;
+    if (enableRecording) {
+      _recordingPaused = false;
+      await prefs?.setBool('recording_paused', false);
+    }
     await _recordings.stop();
     _lastRecordingVerdict = null;
     _cloud?.requestRecordingAudio(
@@ -2131,6 +2137,7 @@ class HomeMonitor extends ChangeNotifier {
     if (_soundLoading) return;
     if (!value) {
       _recordingPaused = true;
+      await prefs?.setBool('recording_paused', true);
       _interruptRecording();
       _cloud?.requestRecordingAudio(false);
       if (isGuardian) await stop();
@@ -2148,6 +2155,7 @@ class HomeMonitor extends ChangeNotifier {
       if (_disposed) return;
       soundWatch.enabled = true;
       _recordingPaused = false;
+      await prefs?.setBool('recording_paused', false);
       _cloud?.requestRecordingAudio(
         _deviceRole == DeviceRole.away && _recordingOptIn,
       );
