@@ -1,5 +1,6 @@
 // Sound-alert history kept on this phone only. The server does not store it.
-// Each alert is metadata (what, when, which home): no audio, ever. The service
+// Each alert here is metadata (what, when, which home). Optional audio clips
+// are stored separately by alert-recordings.js. The service
 // worker saves alerts while the page is closed; this module reads them back.
 export const MAX_EVENTS = 500;
 export const MAX_DAYS = 30;

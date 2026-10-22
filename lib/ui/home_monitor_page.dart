@@ -12,6 +12,7 @@ import '../protocols/mic_monitor.dart';
 import 'access_dialogs.dart';
 import 'design.dart';
 import 'guardian_panel.dart';
+import 'recordings_card.dart';
 import 'smart_home_panel.dart';
 import '../core/smart_home_settings.dart';
 
@@ -149,8 +150,9 @@ class _Setup extends StatelessWidget {
               Text(
                 'A little closer to home.',
                 textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.headlineMedium
-                    ?.copyWith(fontWeight: FontWeight.w800),
+                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                  fontWeight: FontWeight.w800,
+                ),
               ),
               const SizedBox(height: 12),
               Text(
@@ -522,7 +524,7 @@ class _Dashboard extends StatelessWidget {
             const SizedBox(width: 6),
             Flexible(
               child: Text(
-                'Sound stays under your control. No audio recordings.',
+                'Sound stays under your control. Recording is optional on receiving devices.',
                 style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12),
               ),
             ),
@@ -699,9 +701,9 @@ class _ActivityState extends State<_Activity> {
                                 '${event.room} • ${formatWhen(event.at)}',
                                 style: TextStyle(
                                   fontSize: 12,
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .onSurfaceVariant,
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onSurfaceVariant,
                                 ),
                               ),
                               if (event.kind == ActivityKind.sound) ...[
@@ -724,6 +726,10 @@ class _ActivityState extends State<_Activity> {
                   ),
                 ),
               ),
+        if (monitor.deviceRole == DeviceRole.away) ...[
+          const SizedBox(height: 18),
+          RecordingsCard(monitor: monitor),
+        ],
         const SizedBox(height: 8),
         if (rows.length > _visible)
           TextButton(
@@ -731,7 +737,7 @@ class _ActivityState extends State<_Activity> {
             child: const Text('Show more events'),
           ),
         const Text(
-          'Only event details are saved on this phone. Sound detections are estimates; tap Home to listen and check.',
+          'History contains event details. Optional audio clips are listed separately below. Sound detections are estimates.',
           style: TextStyle(fontSize: 12),
         ),
         if (monitor.events.isNotEmpty)
@@ -739,8 +745,9 @@ class _ActivityState extends State<_Activity> {
             onPressed: () async {
               final message = await monitor.exportEventFile();
               if (context.mounted) {
-                ScaffoldMessenger.of(context)
-                    .showSnackBar(SnackBar(content: Text(message)));
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(SnackBar(content: Text(message)));
               }
             },
             icon: const Icon(Icons.download_outlined),
@@ -923,8 +930,9 @@ class _Devices extends StatelessWidget {
                       if (code == null) return;
                       final error = await monitor.disableAuthenticator(code);
                       if (error != null && context.mounted) {
-                        ScaffoldMessenger.of(context)
-                            .showSnackBar(SnackBar(content: Text(error)));
+                        ScaffoldMessenger.of(
+                          context,
+                        ).showSnackBar(SnackBar(content: Text(error)));
                       }
                     },
                     child: Text(
@@ -1196,16 +1204,19 @@ class _Settings extends StatelessWidget {
             Wrap(
               spacing: 8,
               runSpacing: 6,
-              children: ['crying', 'barking', 'knocking', 'loud sound']
-                  .map(
-                    (name) => FilterChip(
-                      label: Text(HomeMonitor.soundCategoryLabel(name)),
-                      selected: monitor.soundWatch.categories.contains(name),
-                      onSelected: (value) =>
-                          monitor.toggleSoundCategory(name, value),
-                    ),
-                  )
-                  .toList(),
+              children:
+                  ['crying', 'coughing', 'barking', 'knocking', 'loud sound']
+                      .map(
+                        (name) => FilterChip(
+                          label: Text(HomeMonitor.soundCategoryLabel(name)),
+                          selected: monitor.soundWatch.categories.contains(
+                            name,
+                          ),
+                          onSelected: (value) =>
+                              monitor.toggleSoundCategory(name, value),
+                        ),
+                      )
+                      .toList(),
             ),
             const SizedBox(height: 18),
             const Text(
@@ -1259,9 +1270,9 @@ class _Settings extends StatelessWidget {
           ],
         ),
       ),
+      const SizedBox(height: 18),
+      GuardianSettingsCard(monitor: monitor),
       if (monitor.deviceRole == DeviceRole.home) ...[
-        const SizedBox(height: 18),
-        GuardianSettingsCard(monitor: monitor),
         const SizedBox(height: 18),
         SmartHomeCard(monitor: monitor),
       ],
@@ -1278,7 +1289,7 @@ class _Settings extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             const Text(
-              'Cloud audio uses encrypted WebRTC; Tailscale mode uses your private network. Sound detection runs locally. Sharing starts from a tap at home. No audio recordings are saved.',
+              'Cloud audio uses encrypted WebRTC; Tailscale mode uses your private network. Sound detection runs locally. Sharing starts from a tap at home. Audio is saved only on receiving devices when you enable an alert’s recording checkbox; it is not uploaded.',
             ),
             const SizedBox(height: 14),
             const Text(
@@ -1321,8 +1332,10 @@ class _Heading extends StatelessWidget {
     children: [
       Text(
         title,
-        style: Theme.of(context).textTheme.headlineMedium
-            ?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -.6),
+        style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+          fontWeight: FontWeight.w800,
+          letterSpacing: -.6,
+        ),
       ),
       const SizedBox(height: 8),
       Text(
@@ -1397,8 +1410,9 @@ Future<void> _rename(BuildContext context, HomeMonitor monitor) async {
 }
 
 Future<void> _scan(BuildContext context, HomeMonitor monitor) async {
-  final code = await Navigator.of(context)
-      .push<String>(MaterialPageRoute(builder: (_) => const _ScanPage()));
+  final code = await Navigator.of(
+    context,
+  ).push<String>(MaterialPageRoute(builder: (_) => const _ScanPage()));
   if (code != null && context.mounted) await _accept(context, monitor, code);
 }
 
@@ -1412,7 +1426,8 @@ Future<void> _accept(
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          monitor.error ?? 'That code could not be paired. Use the code shown on your home phone.',
+          monitor.error ??
+              'That code could not be paired. Use the code shown on your home phone.',
         ),
       ),
     );

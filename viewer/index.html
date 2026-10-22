@@ -48,7 +48,7 @@
       <div class="actions"><button id="listen-button" type="button">Listen live</button><button id="stop-button" class="secondary" type="button" disabled>Stop listening</button></div>
       <button id="play-button" class="secondary" type="button" hidden>Tap to play sound</button>
       <label class="volume" for="volume">Listening volume<input id="volume" type="range" min="0" max="1" step="0.05" value="1"></label>
-      <div class="meta"><span id="battery">Battery: —</span><span id="connection">Live only · no recording</span></div>
+      <div class="meta"><span id="battery">Battery: —</span><span id="connection">Live audio · recording optional</span></div>
       <div class="divider"></div>
       <div class="alert-heading"><div><h3>Sound alerts</h3><p id="alerts-status">Get a notification when the home phone detects a selected sound.</p></div><button id="alerts-button" class="small secondary" type="button">Enable alerts</button></div>
       <button id="forget-button" class="text-button" type="button">Forget this home phone</button>
@@ -56,11 +56,11 @@
     <aside id="install-help" class="install-note" hidden><strong>Using an iPhone?</strong><p>For alerts, open this page in Safari, tap <strong>Share → Add to Home Screen</strong>, then open Home Listen from its new icon and enable alerts. Requires iOS 16.4 or later.</p></aside>
     <section id="history-panel" class="activity" hidden>
       <h2>Sound alert history</h2>
-      <p class="fine">Kept on this phone only, for up to 30 days. No audio is stored.</p>
+      <p class="fine">Event details stay on this device for up to 30 days. Optional audio clips are listed separately.</p>
       <p id="history-counts" class="counts" aria-label="Alerts per day"></p>
       <div class="filters">
         <input id="history-search" class="field" type="search" placeholder="Search alerts" autocomplete="off" aria-label="Search alerts">
-        <select id="history-kind" class="field" aria-label="Sound type"><option value="">All sounds</option><option value="crying">Crying</option><option value="barking">Dog sounds</option><option value="knocking">Knock or doorbell</option><option value="loud sound">Loud sound</option></select>
+        <select id="history-kind" class="field" aria-label="Sound type"><option value="">All sounds</option><option value="crying">Crying</option><option value="coughing">Coughing</option><option value="barking">Dog sounds</option><option value="knocking">Knock or doorbell</option><option value="loud sound">Loud sound</option></select>
         <select id="history-days" class="field" aria-label="Time range"><option value="1">Last day</option><option value="7" selected>Last 7 days</option><option value="30">Last 30 days</option></select>
       </div>
       <p id="history-empty" class="fine">No alerts in this range yet.</p>

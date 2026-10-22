@@ -144,7 +144,8 @@ class SmartHomeIntegration {
       return;
     }
     status = 'Broker unavailable · retrying';
-    problem = 'Check the broker address, TLS certificate, credentials and topic permissions.';
+    problem =
+        'Check the broker address, TLS certificate, credentials and topic permissions.';
     onChanged();
     if (_retry?.isActive == true) return;
     final seconds = [5, 15, 30, 60][_failures.clamp(0, 3)];
@@ -239,6 +240,7 @@ class SmartHomeIntegration {
         : event.category;
     if (![
       'crying',
+      'coughing',
       'barking',
       'knocking',
       'loud_sound',

@@ -4,12 +4,18 @@ import { getAuth, signInAnonymously } from "firebase/auth";
 import { getFirestore, doc, collection, onSnapshot, updateDoc, addDoc, Timestamp } from "firebase/firestore";
 import { parsePairing } from "./pairing.js";
 import { AudioSession } from "./audio-session.js";
+import { createAlertRecordings } from "./alert-recordings.js";
 import { memberAccess, canListen } from "./access.js";
 import { clearAll, dailyCounts, exportJson, filterEvents, loadAll, roomEvents, saveEvent } from "./history.js";
 
 const el = (id) => document.getElementById(id);
 const storageKey = "homelisten-room-v2";
 const audio = el("audio");
+const recordingsPanel = document.createElement("section");
+recordingsPanel.className = "card";
+el("home-panel").after(recordingsPanel);
+const recordings = createAlertRecordings(recordingsPanel);
+el("connection").textContent = "Live audio · recording optional";
 let auth, db, config, roomId = localStorage.getItem(storageKey);
 let room, roomUnsubscribe, session, starting = false, registration, alertsEnabled = false;
 let leaseTimer;
@@ -174,6 +180,7 @@ async function startListening() {
   el("audio-status").textContent = "Connecting to your room…";
   const current = new AudioSession({
     api, roomId, firestore: signaling(roomId),
+    onPeer: (pc) => recordings.attachPeer(pc),
     onTrack: async (stream) => {
       if (session !== current) return;
       audio.srcObject = stream;
@@ -184,7 +191,8 @@ async function startListening() {
       if (session !== current) return;
       document.querySelector(".sound-orb").classList.toggle("playing", state === "connected");
       el("audio-status").textContent = state === "connected" ? "You’re listening to your room." : "Connection: " + state;
-      if (state === "connected") { message("Live audio · encrypted in transit · never recorded"); event("Live listening connected"); }
+      if (state === "connected") { message("Live audio · encrypted in transit · recording only for sounds you selected below"); event("Live listening connected"); }
+      if (state === "disconnected") recordings.interrupted();
     },
     onError: (error) => {
       if (session === current) { message(error.message, true); void stopListening(error.message); }
@@ -196,6 +204,7 @@ async function startListening() {
   finally { starting = false; renderRoom(); }
 }
 async function stopListening(reason = "Listening stopped.") {
+  recordings.stop();
   const current = session; session = null;
   audio.pause(); audio.srcObject = null;
   document.querySelector(".sound-orb").classList.remove("playing");

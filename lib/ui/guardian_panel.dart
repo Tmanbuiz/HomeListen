@@ -109,6 +109,12 @@ class HomeModeSelector extends StatelessWidget {
 class GuardianSettingsCard extends StatelessWidget {
   const GuardianSettingsCard({super.key, required this.monitor});
   final HomeMonitor monitor;
+  String _duration(int seconds) => seconds == 0
+      ? 'Immediately'
+      : seconds % 60 == 0
+      ? '${seconds ~/ 60}min'
+      : '${seconds}s';
+
   String _clock(BuildContext context, int minute) =>
       TimeOfDay(hour: minute ~/ 60, minute: minute % 60).format(context);
   Future<void> _time(BuildContext context, bool start) async {
@@ -139,7 +145,7 @@ class GuardianSettingsCard extends StatelessWidget {
           ),
           const SizedBox(height: 10),
           const Text(
-            'Tune each sound for this room. Higher scores make alerts more selective; scores are not probabilities.',
+            'Set push-alert timing on the home phone. On a receiver, duration controls which recordings are kept. Scores are not probabilities.',
           ),
           const SizedBox(height: 12),
           for (final name in guardianCategories)
@@ -148,9 +154,18 @@ class GuardianSettingsCard extends StatelessWidget {
               childrenPadding: EdgeInsets.zero,
               title: Text(HomeMonitor.soundCategoryLabel(name)),
               subtitle: Text(
-                'Hold ${settings.rules[name]!.minimumSeconds}s · repeat after ${settings.rules[name]!.cooldownSeconds}s',
+                '${_duration(settings.rules[name]!.minimumSeconds)} · repeat after ${settings.rules[name]!.cooldownSeconds}s'
+                '${settings.rules[name]!.recordAudio ? ' · saves audio' : ''}',
               ),
               children: [
+                SwitchListTile.adaptive(
+                  key: ValueKey('enable-sound-$name'),
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Enable this sound alert'),
+                  value: monitor.soundWatch.categories.contains(name),
+                  onChanged: (value) =>
+                      monitor.toggleSoundCategory(name, value),
+                ),
                 Text(
                   name == 'loud sound'
                       ? 'Loudness threshold'
@@ -167,13 +182,17 @@ class GuardianSettingsCard extends StatelessWidget {
                     settings.rules[name]!.copyWith(threshold: value),
                   ),
                 ),
-                const Text('Minimum duration'),
+                Text(
+                  monitor.deviceRole == DeviceRole.home
+                      ? 'Alert after sound lasts'
+                      : 'Keep recording after sound lasts',
+                ),
                 Slider(
                   value: settings.rules[name]!.minimumSeconds.toDouble(),
                   min: 0,
-                  max: 10,
-                  divisions: 10,
-                  label: '${settings.rules[name]!.minimumSeconds}s',
+                  max: 300,
+                  divisions: 300,
+                  label: _duration(settings.rules[name]!.minimumSeconds),
                   onChanged: (value) => monitor.setSoundRule(
                     name,
                     settings.rules[name]!.copyWith(
@@ -181,6 +200,43 @@ class GuardianSettingsCard extends StatelessWidget {
                     ),
                   ),
                 ),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    for (final seconds in [0, 8, 15, 30, 60, 120, 300])
+                      ChoiceChip(
+                        label: Text(_duration(seconds)),
+                        selected:
+                            settings.rules[name]!.minimumSeconds == seconds,
+                        onSelected: (_) => monitor.setSoundRule(
+                          name,
+                          settings.rules[name]!.copyWith(
+                            minimumSeconds: seconds,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                CheckboxListTile(
+                  key: ValueKey('record-audio-$name'),
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  title: const Text('Record this alert on this phone'),
+                  subtitle: const Text(
+                    'Receiving phone only. Keep live listening connected to save the detected episode with its date, time and sound name. Off unless checked.',
+                  ),
+                  value: settings.rules[name]!.recordAudio,
+                  onChanged: monitor.deviceRole == DeviceRole.home
+                      ? null
+                      : (value) => monitor.setSoundRule(
+                          name,
+                          settings.rules[name]!.copyWith(
+                            recordAudio: value ?? false,
+                          ),
+                        ),
+                ),
+                const SizedBox(height: 8),
+                const Text('Repeat alert after'),
                 Wrap(
                   spacing: 8,
                   children: [
@@ -239,7 +295,7 @@ class GuardianSettingsCard extends StatelessWidget {
             ),
           const SizedBox(height: 10),
           const Text(
-            'Uses this home phone’s local time. Matching start and end times mean no quiet interval.',
+            'Uses this phone’s local time. Matching start and end times mean no quiet interval.',
             style: TextStyle(fontSize: 12),
           ),
           const Divider(height: 28),
@@ -316,8 +372,9 @@ class SpeechSessionsCard extends StatelessWidget {
                   }
                   final error = await monitor.openSpeechSession();
                   if (error != null && context.mounted) {
-                    ScaffoldMessenger.of(context)
-                        .showSnackBar(SnackBar(content: Text(error)));
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(SnackBar(content: Text(error)));
                   }
                 },
           icon: const Icon(Icons.open_in_new),

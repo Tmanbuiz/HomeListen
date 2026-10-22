@@ -1,6 +1,18 @@
 import 'dart:convert';
 
-const guardianCategories = ['crying', 'barking', 'knocking', 'loud sound'];
+const guardianCategories = [
+  'crying',
+  'coughing',
+  'barking',
+  'knocking',
+  'loud sound',
+];
+
+int defaultSoundDuration(String category) => switch (category) {
+  'crying' => 30,
+  'coughing' => 8,
+  _ => 0,
+};
 
 /// A detector score is a model output, not a probability of danger.
 class SoundRule {
@@ -9,22 +21,28 @@ class SoundRule {
     this.minimumSeconds = 0,
     this.cooldownSeconds = 30,
     this.duringQuietHours = false,
+    this.recordAudio = false,
   });
   final double threshold;
   final int minimumSeconds;
   final int cooldownSeconds;
   final bool duringQuietHours;
 
+  /// Save qualifying episodes only on an actively listening receiving phone.
+  final bool recordAudio;
+
   SoundRule copyWith({
     double? threshold,
     int? minimumSeconds,
     int? cooldownSeconds,
     bool? duringQuietHours,
+    bool? recordAudio,
   }) => SoundRule(
     threshold: (threshold ?? this.threshold).clamp(0.2, 0.9),
-    minimumSeconds: (minimumSeconds ?? this.minimumSeconds).clamp(0, 10),
+    minimumSeconds: (minimumSeconds ?? this.minimumSeconds).clamp(0, 300),
     cooldownSeconds: (cooldownSeconds ?? this.cooldownSeconds).clamp(5, 600),
     duringQuietHours: duringQuietHours ?? this.duringQuietHours,
+    recordAudio: recordAudio ?? this.recordAudio,
   );
 
   Map<String, Object> toJson() => {
@@ -32,6 +50,7 @@ class SoundRule {
     'minimumSeconds': minimumSeconds,
     'cooldownSeconds': cooldownSeconds,
     'duringQuietHours': duringQuietHours,
+    'recordAudio': recordAudio,
   };
 
   static SoundRule fromJson(Map row, SoundRule fallback) => fallback.copyWith(
@@ -45,6 +64,7 @@ class SoundRule {
     duringQuietHours: row['duringQuietHours'] is bool
         ? row['duringQuietHours']
         : null,
+    recordAudio: row['recordAudio'] is bool ? row['recordAudio'] : null,
   );
 }
 
@@ -59,7 +79,7 @@ class GuardianSettings {
          for (final name in guardianCategories)
            name:
                rules?[name] ??
-               SoundRule(minimumSeconds: name == 'crying' ? 1 : 0),
+               SoundRule(minimumSeconds: defaultSoundDuration(name)),
        };
 
   final bool quietEnabled;
@@ -97,7 +117,7 @@ class GuardianSettings {
   );
 
   String encode() => jsonEncode({
-    'version': 1,
+    'version': 2,
     'quietEnabled': quietEnabled,
     'quietStart': quietStart,
     'quietEnd': quietEnd,
@@ -111,7 +131,7 @@ class GuardianSettings {
         for (final name in guardianCategories)
           name: SoundRule(
             threshold: threshold.clamp(0.2, 0.9),
-            minimumSeconds: name == 'crying' ? 1 : 0,
+            minimumSeconds: defaultSoundDuration(name),
           ),
       },
     );
@@ -119,6 +139,19 @@ class GuardianSettings {
       final row = jsonDecode(raw ?? '{}');
       if (row is! Map) return fallback;
       final stored = row['rules'];
+      // Version 1 used a one-second crying default. Upgrade that default while
+      // retaining custom timings, including an explicit immediate alert.
+      final legacy = row['version'] != 2;
+      SoundRule restoreRule(String name) {
+        if (stored is! Map || stored[name] is! Map) {
+          return fallback.rules[name]!;
+        }
+        final rule = SoundRule.fromJson(stored[name], fallback.rules[name]!);
+        return legacy && name == 'crying' && rule.minimumSeconds == 1
+            ? rule.copyWith(minimumSeconds: 30)
+            : rule;
+      }
+
       return fallback.copyWith(
         quietEnabled: row['quietEnabled'] is bool ? row['quietEnabled'] : null,
         quietStart: row['quietStart'] is int ? row['quietStart'] : null,
@@ -126,12 +159,7 @@ class GuardianSettings {
         retentionDays: row['retentionDays'] is int
             ? row['retentionDays']
             : null,
-        rules: {
-          for (final name in guardianCategories)
-            name: stored is Map && stored[name] is Map
-                ? SoundRule.fromJson(stored[name], fallback.rules[name]!)
-                : fallback.rules[name]!,
-        },
+        rules: {for (final name in guardianCategories) name: restoreRule(name)},
       );
     } on FormatException {
       return fallback;

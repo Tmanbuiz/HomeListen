@@ -199,7 +199,14 @@ class SmartHomeTopics {
     result[discovery('event', 'sound')] = {
       ...entity('Sound event', 'sound'),
       'state_topic': events,
-      'event_types': ['crying', 'barking', 'knocking', 'loud_sound', 'test'],
+      'event_types': [
+        'crying',
+        'coughing',
+        'barking',
+        'knocking',
+        'loud_sound',
+        'test',
+      ],
       'value_template': '{{ value_json | tojson }}',
     };
     if (controls) {

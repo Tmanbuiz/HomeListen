@@ -15,6 +15,7 @@ import io.flutter.embedding.engine.FlutterEngineCache
 import io.flutter.embedding.engine.dart.DartExecutor
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import java.io.File
 
 /**
  * Owns the one Flutter engine, independently of any screen.
@@ -38,12 +39,30 @@ object HomeListenEngine {
     private const val CHANNEL = "com.wiantribe.home_listen/mic_service"
     const val REQUEST_NOTIFICATIONS = 4101
     const val REQUEST_EXPORT = 4102
+    const val REQUEST_EXPORT_RECORDING = 4103
 
     /** The visible screen, when there is one; permission prompts need it. */
     @Volatile var activity: Activity? = null
 
     private var pendingStart: (() -> Unit)? = null
     private var pendingExport: Pair<String, MethodChannel.Result>? = null
+    private var pendingRecordingExport: Pair<File, MethodChannel.Result>? = null
+
+    /** Private durable storage, excluded from Android cloud/device backups. */
+    private fun recordingsDirectory(context: Context): File {
+        val directory = File(context.noBackupFilesDir, "alert-recordings")
+        check(directory.isDirectory || directory.mkdirs()) { "Recordings storage is unavailable" }
+        return directory.canonicalFile
+    }
+
+    private fun recordingFile(context: Context, path: String?, name: String?): File? {
+        if (path == null || path.length > 4096 || name == null || name.length > 240 ||
+            !name.endsWith(".wav") || name != File(name).name || '/' in name || '\\' in name) return null
+        val file = File(path).canonicalFile
+        return file.takeIf {
+            it.parentFile == recordingsDirectory(context) && it.name == name && it.isFile
+        }
+    }
 
     fun engine(context: Context): FlutterEngine {
         FlutterEngineCache.getInstance().get(ENGINE_ID)?.let { return it }
@@ -67,10 +86,38 @@ object HomeListenEngine {
 
     private fun handle(context: Context, call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
+            "recordingsDirectory" -> try {
+                result.success(recordingsDirectory(context).path)
+            } catch (_: Exception) {
+                result.error("recordings_unavailable", "Could not open private recordings storage.", null)
+            }
+            "exportRecording" -> {
+                val screen = activity
+                val file = try {
+                    recordingFile(context, call.argument<String>("path"), call.argument<String>("name"))
+                } catch (_: Exception) { null }
+                if (screen == null || file == null || pendingExport != null || pendingRecordingExport != null) {
+                    result.error("export_unavailable", "Open Home Listen and select an existing recording.", null)
+                } else {
+                    pendingRecordingExport = Pair(file, result)
+                    try {
+                        screen.startActivityForResult(
+                            Intent(Intent.ACTION_CREATE_DOCUMENT)
+                                .addCategory(Intent.CATEGORY_OPENABLE)
+                                .setType("audio/wav")
+                                .putExtra(Intent.EXTRA_TITLE, file.name),
+                            REQUEST_EXPORT_RECORDING,
+                        )
+                    } catch (_: Exception) {
+                        pendingRecordingExport = null
+                        result.error("export_unavailable", "This phone cannot open a file picker.", null)
+                    }
+                }
+            }
             "exportActivity" -> {
                 val screen = activity
                 val content = call.argument<String>("content")
-                if (screen == null || content == null || content.length > 1_000_000 || pendingExport != null) {
+                if (screen == null || content == null || content.length > 1_000_000 || pendingExport != null || pendingRecordingExport != null) {
                     result.error("export_unavailable", "Open Home Listen and try exporting again.", null)
                 } else {
                     pendingExport = Pair(content, result)
@@ -210,6 +257,31 @@ object HomeListenEngine {
     }
 
     fun onActivityResult(context: Context, requestCode: Int, resultCode: Int, intent: Intent?) {
+        if (requestCode == REQUEST_EXPORT_RECORDING) {
+            val pending = pendingRecordingExport ?: return
+            pendingRecordingExport = null
+            val uri = intent?.data
+            if (resultCode != Activity.RESULT_OK || uri == null) {
+                pending.second.success(false)
+                return
+            }
+            // Clips can last several minutes. Stream the copy off the UI thread.
+            Thread {
+                val success = try {
+                    val source = recordingFile(context, pending.first.path, pending.first.name)
+                        ?: throw IllegalStateException("Recording no longer available")
+                    context.contentResolver.openOutputStream(uri)?.use { output ->
+                        source.inputStream().use { input -> input.copyTo(output) }
+                    } ?: throw IllegalStateException("No output stream")
+                    true
+                } catch (_: Exception) { false }
+                Handler(Looper.getMainLooper()).post {
+                    if (success) pending.second.success(true)
+                    else pending.second.error("export_failed", "Could not save the recording to that location.", null)
+                }
+            }.start()
+            return
+        }
         if (requestCode != REQUEST_EXPORT) return
         val pending = pendingExport ?: return
         pendingExport = null

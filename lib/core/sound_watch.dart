@@ -21,9 +21,12 @@ class SoundGate {
     this.cooldown = const Duration(seconds: 30),
     this.immediate = const {},
     this.burst = const {},
+    this.toleratedGap = Duration.zero,
   });
   final int requiredHits;
   final Duration cooldown;
+  final Duration toleratedGap;
+  DateTime? _lastHitAt;
   final Set<String> immediate;
 
   /// Categories that need this many separate detections close together, such as
@@ -44,9 +47,19 @@ class SoundGate {
 
   bool accept(String? category, DateTime at) {
     if (category == null) {
+      final last = _lastHitAt;
+      if (toleratedGap > Duration.zero &&
+          last != null &&
+          at.difference(last) < toleratedGap)
+        return false;
       reset();
       return false;
     }
+    if (toleratedGap > Duration.zero &&
+        _lastHitAt != null &&
+        at.difference(_lastHitAt!) >= toleratedGap)
+      reset();
+    _lastHitAt = at;
     if (burst.containsKey(category)) {
       final hits = _recent.putIfAbsent(category, () => []);
       hits.removeWhere((t) => at.difference(t) > burstSpan);
@@ -82,6 +95,7 @@ class SoundGate {
   void reset({bool clearBursts = false}) {
     _candidate = null;
     _candidateAt = null;
+    _lastHitAt = null;
     _hits = 0;
     if (clearBursts) _recent.clear();
   }
@@ -95,6 +109,7 @@ class SoundGate {
 /// its related classes.
 const Map<String, Set<String>> soundGroups = {
   'crying': {'Baby cry, infant cry', 'Crying, sobbing', 'Whimper'},
+  'coughing': {'Cough'},
   'barking': {'Bark', 'Bow-wow', 'Yip', 'Howl', 'Dog', 'Growling'},
   'knocking': {'Knock', 'Doorbell', 'Ding-dong', 'Tap'},
 };
@@ -156,6 +171,7 @@ class SoundWatch {
   late final SoundGate _gate = SoundGate(
     immediate: {'barking', 'knocking', 'loud sound'},
     burst: {'barking': 2},
+    toleratedGap: const Duration(seconds: 2),
   );
   bool _busy = false;
   bool _disposed = false;
@@ -166,6 +182,7 @@ class SoundWatch {
   double sensitivity = 0.4;
   final Set<String> categories = {
     'crying',
+    'coughing',
     'barking',
     'knocking',
     'loud sound',
@@ -206,6 +223,7 @@ class SoundWatch {
 
   void Function(String title)? onEvent;
   void Function(SoundDetection event)? onDetection;
+  void Function(SoundVerdict verdict, DateTime at)? onVerdict;
   void Function()? onHeard;
   void Function(double noiseFloor)? onCalibrated;
   void Function(String reason)? onError;
@@ -218,11 +236,9 @@ class SoundWatch {
   }
 
   Future<void> _initialize() async {
-    _labels = (await rootBundle.loadString('assets/models/yamnet_labels.txt'))
-        .trim()
-        .split('\n')
-        .map((l) => l.trim())
-        .toList();
+    _labels = (await rootBundle.loadString(
+      'assets/models/yamnet_labels.txt',
+    )).trim().split('\n').map((l) => l.trim()).toList();
     final interpreter = await Interpreter.fromAsset(
       'assets/models/yamnet.tflite',
       options: InterpreterOptions()..threads = 2,
@@ -379,6 +395,7 @@ class SoundWatch {
         '${verdict.category == null ? '' : ' -> ${verdict.category}'}',
       );
       onHeard?.call();
+      onVerdict?.call(verdict, lastWindowAt!);
       _gate.rules = rules;
       if (_gate.accept(verdict.category, lastWindowAt!)) {
         final detection = SoundDetection(

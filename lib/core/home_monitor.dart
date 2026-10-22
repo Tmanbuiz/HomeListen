@@ -13,6 +13,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../protocols/mic_monitor.dart';
 import 'activity_event.dart';
+import 'episode_recordings.dart';
 import 'alert_outbox.dart';
 import 'alert_inbox.dart';
 import 'guardian_settings.dart';
@@ -111,6 +112,30 @@ class HomeMonitor extends ChangeNotifier {
         ..clear()
         ..addAll(selected);
     }
+    _recordings = EpisodeRecordings(
+      directory: () async {
+        final path = await _channel.invokeMethod<String>('recordingsDirectory');
+        if (path == null || path.isEmpty)
+          throw StateError('Recording storage unavailable');
+        return Directory(path);
+      },
+      onChanged: _notify,
+      onError: (message) {
+        _recordingProblem = message;
+        _notify();
+      },
+    );
+    soundWatch.onVerdict = (verdict, at) {
+      if (_deviceRole == DeviceRole.home) {
+        _cloud?.publishRecordingVerdict(
+          verdict.category,
+          at,
+          verdict.categoryScore,
+        );
+      } else if (!cloudMode) {
+        _observeRecording(verdict.category, at);
+      }
+    };
     soundWatch.onDetection = (detection) {
       final title = detection.title;
       // The home phone already told this phone: do not say it twice.
@@ -200,6 +225,90 @@ class HomeMonitor extends ChangeNotifier {
   final PcmFramer _meterFramer = PcmFramer();
   final List<ActivityEvent> _events = [];
   final List<PendingAlert> _outbox = [];
+  late final EpisodeRecordings _recordings;
+  String? _recordingProblem;
+  DateTime? _lastRecordingVerdict, _lastRecordingPcm;
+  Timer? _recordingWatchdog;
+  List<RecordingClip> get recordingClips => _recordings.clips;
+  bool get recordingAudio => _recordings.recording;
+  bool get bufferingRecording => _recordings.buffering;
+  String? get recordingProblem => _recordingProblem;
+  bool _recordingPaused = false;
+  bool get _recordingOptIn =>
+      !_recordingPaused &&
+      soundWatch.categories.any(
+        (name) => _guardianSettings.rules[name]?.recordAudio == true,
+      );
+  bool get _canRecord =>
+      _deviceRole == DeviceRole.away && isListening && _recordingOptIn;
+
+  Future<void> loadRecordings() async {
+    if (_deviceRole != DeviceRole.away) return;
+    await _recordings.initialize();
+    await _recordings.prune(retentionDays: _guardianSettings.retentionDays);
+  }
+
+  Future<void> deleteRecording(RecordingClip clip) => _recordings.delete(clip);
+  Future<void> clearRecordings() => _recordings.clear();
+  Future<String> exportRecording(RecordingClip clip) async {
+    try {
+      final saved = await _channel.invokeMethod<bool>('exportRecording', {
+        'path': clip.path,
+        'name': clip.name,
+      });
+      return saved == true ? 'Audio exported.' : 'Export cancelled.';
+    } catch (_) {
+      return 'Could not export audio. Open Home Listen and try again.';
+    }
+  }
+
+  void _observeRecording(String? category, DateTime at) {
+    if (!_canRecord) return;
+    _lastRecordingVerdict = DateTime.now();
+    final rule = _guardianSettings.rules[category];
+    _recordings.observe(
+      category,
+      at,
+      minimumSeconds: rule?.minimumSeconds ?? 0,
+      recordAudio:
+          category != null &&
+          soundWatch.categories.contains(category) &&
+          rule?.recordAudio == true,
+    );
+  }
+
+  void _feedRecording(Int16List pcm) {
+    if (!_canRecord) return;
+    _lastRecordingPcm = DateTime.now();
+    _recordingWatchdog ??= Timer.periodic(const Duration(seconds: 1), (_) {
+      final pcmAt = _lastRecordingPcm;
+      final verdictAt = _lastRecordingVerdict;
+      final now = DateTime.now();
+      if (!_canRecord ||
+          pcmAt == null ||
+          now.difference(pcmAt) > const Duration(seconds: 1) ||
+          (verdictAt != null &&
+              now.difference(verdictAt) > const Duration(seconds: 3))) {
+        _interruptRecording();
+      }
+    });
+    final last = _lastRecordingVerdict;
+    if (last != null &&
+        DateTime.now().difference(last) > const Duration(seconds: 3)) {
+      unawaited(_recordings.stop());
+      return;
+    }
+    _recordings.feed(pcm);
+  }
+
+  void _interruptRecording() {
+    _recordingWatchdog?.cancel();
+    _recordingWatchdog = null;
+    _lastRecordingPcm = null;
+    _lastRecordingVerdict = null;
+    unawaited(_recordings.stop());
+  }
+
   GuardianSettings _guardianSettings = GuardianSettings();
   SmartHomeSettings _smartHomeSettings = const SmartHomeSettings();
   late final SmartHomeIntegration _smartHome;
@@ -275,11 +384,15 @@ class HomeMonitor extends ChangeNotifier {
         'Open Settings → Connection and enter your cloud server address.',
       );
     }
-    return _cloud ??= CloudConnection(
+    final cloud = _cloud ??= CloudConnection(
       origin: cloudServer,
       prefs: prefs!,
       home: _deviceRole == DeviceRole.home,
       onPcm: _processPcm,
+      onRecordingPcm: _feedRecording,
+      onRecordingVerdict: (category, at, score) =>
+          _observeRecording(category, at),
+      onRecordingInterrupted: _interruptRecording,
       onLevel: _onCloudLevel,
       onAlert: _onRemoteAlert,
       onProblem: (reason) {
@@ -288,6 +401,10 @@ class HomeMonitor extends ChangeNotifier {
       },
       onChanged: _cloudChanged,
     );
+    cloud.requestRecordingAudio(
+      _deviceRole == DeviceRole.away && _recordingOptIn,
+    );
+    return cloud;
   }
 
   void _cloudChanged() {
@@ -305,6 +422,8 @@ class HomeMonitor extends ChangeNotifier {
       } else {
         _remoteStatusAt = null;
       }
+      if (isListening && (!cloud.listening || !cloud.hearing))
+        _interruptRecording();
       if (isListening && !cloud.listening) {
         _role = MonitorRole.idle;
       }
@@ -432,6 +551,7 @@ class HomeMonitor extends ChangeNotifier {
 
   static String soundCategoryLabel(String name) => switch (name) {
     'crying' => 'Crying',
+    'coughing' => 'Coughing',
     'barking' => 'Dog sounds',
     'knocking' => 'Knocks and doorbells',
     'loud sound' => 'Loud sounds',
@@ -660,7 +780,8 @@ class HomeMonitor extends ChangeNotifier {
       await prefs?.remove('paired_token');
       _securityReady = true;
     } catch (_) {
-      _error = 'Secure pairing storage could not be opened. Restart the app before pairing or sharing.';
+      _error =
+          'Secure pairing storage could not be opened. Restart the app before pairing or sharing.';
     }
     await _refreshHealth();
     if (cloudMode && cloudServer.isNotEmpty) {
@@ -997,7 +1118,8 @@ class HomeMonitor extends ChangeNotifier {
         (_lastCaptureAt ?? _sessionStarted) != null &&
         DateTime.now().difference((_lastCaptureAt ?? _sessionStarted)!) >
             const Duration(seconds: 15)) {
-      _error = 'Monitoring stopped because microphone samples stopped arriving. Open Home and start again.';
+      _error =
+          'Monitoring stopped because microphone samples stopped arriving. Open Home and start again.';
       _addEvent(ActivityKind.disconnected, 'Microphone feed stopped');
       unawaited(stop());
     }
@@ -1229,7 +1351,8 @@ class HomeMonitor extends ChangeNotifier {
         },
         onError: (Object _) {
           if (epoch != _epoch || _disposed) return;
-          _error = 'Guardian stopped because its microphone feed failed. Start again from Home.';
+          _error =
+              'Guardian stopped because its microphone feed failed. Start again from Home.';
           unawaited(stop());
         },
         onDone: () {
@@ -1325,6 +1448,15 @@ class HomeMonitor extends ChangeNotifier {
     );
     soundWatch.rules = _guardianSettings.rules;
     soundWatch.reset();
+    if (rule.recordAudio) _recordingPaused = false;
+    await _recordings.stop();
+    _lastRecordingVerdict = null;
+    _cloud?.requestRecordingAudio(
+      _deviceRole == DeviceRole.away && _recordingOptIn,
+    );
+    if (_recordingOptIn && _deviceRole == DeviceRole.away && !cloudMode) {
+      await setSoundEnabled(true);
+    }
     await _saveGuardianSettings();
     _notify();
   }
@@ -1332,6 +1464,8 @@ class HomeMonitor extends ChangeNotifier {
   Future<void> setRetentionDays(int days) async {
     _guardianSettings = _guardianSettings.copyWith(retentionDays: days);
     _pruneActivity();
+    if (_deviceRole == DeviceRole.away)
+      await _recordings.prune(retentionDays: days);
     await _saveGuardianSettings();
     await _saveActivity();
     _notify();
@@ -1670,6 +1804,7 @@ class HomeMonitor extends ChangeNotifier {
     final old = _listener;
     _listener = null;
     _role = MonitorRole.idle;
+    _interruptRecording();
     _remoteStatusAt = null;
     soundWatch.reset();
     try {
@@ -1884,6 +2019,7 @@ class HomeMonitor extends ChangeNotifier {
     if (_listener != listener || _disposed) return;
     _listener = null;
     _role = MonitorRole.idle;
+    _interruptRecording();
     _remoteStatusAt = null;
     soundWatch.reset();
     await listener.stop();
@@ -1930,6 +2066,7 @@ class HomeMonitor extends ChangeNotifier {
   void _processPcm(Int16List pcm) {
     if (_disposed) return;
     _lastCaptureAt = DateTime.now();
+    if (_deviceRole == DeviceRole.away && !cloudMode) _feedRecording(pcm);
     soundWatch.feed(pcm);
     var sum = 0.0;
     for (final v in pcm) {
@@ -1979,6 +2116,7 @@ class HomeMonitor extends ChangeNotifier {
   Future<void> _ensureSoundWatch() async {
     if (_disposed || _soundLoading) return;
     if (prefs?.getBool('sound_enabled') != true &&
+        !_recordingOptIn &&
         _deviceRole != DeviceRole.home) {
       return;
     }
@@ -1990,6 +2128,9 @@ class HomeMonitor extends ChangeNotifier {
   Future<void> setSoundEnabled(bool value) async {
     if (_soundLoading) return;
     if (!value) {
+      _recordingPaused = true;
+      _interruptRecording();
+      _cloud?.requestRecordingAudio(false);
       if (isGuardian) await stop();
       soundWatch.enabled = false;
       soundWatch.reset();
@@ -2004,6 +2145,10 @@ class HomeMonitor extends ChangeNotifier {
       await soundWatch.initialize();
       if (_disposed) return;
       soundWatch.enabled = true;
+      _recordingPaused = false;
+      _cloud?.requestRecordingAudio(
+        _deviceRole == DeviceRole.away && _recordingOptIn,
+      );
       await prefs?.setBool('sound_enabled', true);
       debugPrint('sound watch: enabled, ready=${soundWatch.ready}');
       _notify();
@@ -2012,10 +2157,13 @@ class HomeMonitor extends ChangeNotifier {
         onTimeout: () => false,
       );
       if (_disposed) return;
-      if (!_notificationsAllowed) _error = 'Sound Watch is active in the app. Enable notifications in phone settings for alerts outside this screen.';
+      if (!_notificationsAllowed)
+        _error =
+            'Sound Watch is active in the app. Enable notifications in phone settings for alerts outside this screen.';
     } catch (e) {
       debugPrint('sound watch: failed to load: $e');
-      _error = 'Sound Watch could not load on this device. Live listening is available.';
+      _error =
+          'Sound Watch could not load on this device. Live listening is available.';
     } finally {
       _soundLoading = false;
       _notify();
@@ -2043,6 +2191,11 @@ class HomeMonitor extends ChangeNotifier {
       soundWatch.categories.remove(name);
     }
     soundWatch.reset();
+    await _recordings.stop();
+    _lastRecordingVerdict = null;
+    _cloud?.requestRecordingAudio(
+      _deviceRole == DeviceRole.away && _recordingOptIn,
+    );
     await prefs?.setStringList(
       'sound_categories',
       soundWatch.categories.toList(),
@@ -2106,6 +2259,11 @@ class HomeMonitor extends ChangeNotifier {
       .replaceFirst('Exception: ', '');
   Future<void> stop() async {
     _epoch++;
+    _recordingWatchdog?.cancel();
+    _recordingWatchdog = null;
+    _lastRecordingPcm = null;
+    await _recordings.stop();
+    _lastRecordingVerdict = null;
     _smartHome.clearPending();
     _suppressAuto = true;
     _wantListening = false;
@@ -2121,6 +2279,7 @@ class HomeMonitor extends ChangeNotifier {
     await listener?.stop();
     if (pendingListener != listener) await pendingListener?.stop();
     _role = MonitorRole.idle;
+    _interruptRecording();
     _remoteStatusAt = null;
     _sessionStarted = null;
     _lastCaptureAt = null;
@@ -2137,6 +2296,7 @@ class HomeMonitor extends ChangeNotifier {
     _watch?.cancel();
     _healthTimer?.cancel();
     _outboxTimer?.cancel();
+    _recordingWatchdog?.cancel();
     _channel.setMethodCallHandler(null);
     unawaited(stop().whenComplete(() => _recorderInstance?.dispose()));
     unawaited(soundWatch.dispose());

@@ -1,8 +1,8 @@
 // One receive-only peer. This module never calls getUserMedia.
 export class AudioSession {
   constructor({ api, roomId, firestore, rtc = (config) => new RTCPeerConnection(config),
-    onTrack, onState, onError, now = () => Date.now() }) {
-    Object.assign(this, { api, roomId, firestore, rtc, onTrack, onState, onError, now });
+    onTrack, onState, onError, onPeer, now = () => Date.now() }) {
+    Object.assign(this, { api, roomId, firestore, rtc, onTrack, onState, onError, onPeer, now });
     this.closed = false;
     this.unsubscribers = [];
     this.candidates = [];
@@ -16,6 +16,8 @@ export class AudioSession {
     const ice = await this.api("/rooms/" + this.roomId + "/ice", {});
     if (this.closed) { await this.endRemote(); return; }
     const pc = this.pc = this.rtc({ iceServers: ice.iceServers });
+    // Add receiver-only optional data channels before the offer is created.
+    this.onPeer?.(pc);
     const fail = (error) => { if (!this.closed) this.onError(error); };
     pc.ontrack = (event) => {
       if (!this.closed) this.onTrack(event.streams[0] ?? new MediaStream([event.track]));
