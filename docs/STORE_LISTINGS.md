@@ -11,7 +11,7 @@ Sound detection is not an emergency alarm. Keep that wording in every listing.
 | Item | Status |
 | --- | --- |
 | Privacy policy page | Written: `viewer/public/privacy.html`, served at `https://homelisten.oralyvo.app/privacy` after the Worker is deployed. Have it reviewed before you rely on it; Claude is not a lawyer. |
-| Support page | Written: `https://homelisten.oralyvo.app/support`, with `support@oralyvo.com`. Make sure that mailbox exists and you read it, then deploy the Worker. |
+| Support page | Written: `https://homelisten.oralyvo.app/support`, with `support@oralyvo.com` and `support@wiantribe.com`. Make sure both mailboxes exist and you read them, then deploy the Worker. The store consoles each take one support address; use `support@wiantribe.com` or `support@oralyvo.com`, whichever is the publisher's. |
 | iPhone cloud mode | **Built and merged.** The iPhone listens in cloud mode and can be a Guardian-only home phone. Live sharing from an iPhone home phone is not built. Still needed before it works: add the iOS app in Firebase, upload the APNs key, set `FIREBASE_IOS_APP_ID` and deploy (README, iPhone app setup). The main App Store review risk is now a reviewer who cannot try it without a second phone (Guideline 2.1). |
 | iOS signing | `ios-testflight` workflow added to `codemagic.yaml`. It needs the App Store Connect API key added in Codemagic as `homelisten-asc` and the app record created first (steps below). The older `ios-unsigned` workflow cannot go to TestFlight. |
 | Android signing | Needs your permanent key (`docs/ANDROID_RELEASE.md`). Play also needs an `.aab`, which the signed workflow already makes. |
