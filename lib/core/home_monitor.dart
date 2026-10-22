@@ -2268,11 +2268,13 @@ class HomeMonitor extends ChangeNotifier {
   Future<void> stop() async {
     final active = isActive;
     _role = MonitorRole.idle;
+    _suppressAuto = true;
+    _wantListening = false;
     _epoch++;
     _recordingWatchdog?.cancel();
     _recordingWatchdog = null;
     _lastRecordingPcm = null;
-    await _recordings.stop();
+    final closingRecordings = _recordings.stop();
     _lastRecordingVerdict = null;
     _smartHome.clearPending();
     _suppressAuto = true;
@@ -2287,6 +2289,7 @@ class HomeMonitor extends ChangeNotifier {
     _pendingListener = null;
     await listener?.stop();
     if (pendingListener != listener) await pendingListener?.stop();
+    await closingRecordings;
     _role = MonitorRole.idle;
     _interruptRecording();
     _remoteStatusAt = null;
