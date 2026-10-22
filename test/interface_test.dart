@@ -1,9 +1,26 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:home_listen/main.dart';
+import 'package:home_listen/core/home_monitor.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  const recordingChannel = MethodChannel(HomeMonitor.channelName);
+  setUp(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(recordingChannel, (call) async {
+          if (call.method == 'recordingsDirectory') {
+            throw PlatformException(code: 'recordings_test_unavailable');
+          }
+          return null;
+        });
+  });
+  tearDown(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(recordingChannel, null);
+  });
   testWidgets('Guardian controls fit a small home phone with enlarged text', (
     tester,
   ) async {
