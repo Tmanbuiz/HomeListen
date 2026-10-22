@@ -1445,7 +1445,8 @@ class HomeMonitor extends ChangeNotifier {
 
   Future<void> setSoundRule(String category, SoundRule rule) async {
     if (!guardianCategories.contains(category)) return;
-    final enableRecording = rule.recordAudio &&
+    final enableRecording =
+        rule.recordAudio &&
         _guardianSettings.rules[category]?.recordAudio != true;
     _guardianSettings = _guardianSettings.copyWith(
       rules: {..._guardianSettings.rules, category: rule},
