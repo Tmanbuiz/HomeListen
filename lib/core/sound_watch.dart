@@ -171,8 +171,8 @@ class SoundWatch {
   List<String> _labels = [];
   final List<double> _window = [];
   late final SoundGate _gate = SoundGate(
-    immediate: {'barking', 'knocking', 'loud sound'},
-    burst: {'barking': 2},
+    immediate: {'barking', 'knocking', 'loud sound', 'coughing'},
+    burst: {'barking': 2, 'coughing': 2},
     toleratedGap: const Duration(seconds: 2),
   );
   bool _busy = false;

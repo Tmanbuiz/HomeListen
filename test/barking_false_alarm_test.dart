@@ -101,4 +101,21 @@ void main() {
       },
     );
   });
+
+  group('coughing needs two separate coughs, not a sustained sound', () {
+    SoundGate gate() =>
+        SoundGate(immediate: {'coughing'}, burst: {'coughing': 2});
+    final t0 = DateTime(2026, 10, 10, 12);
+
+    test('one cough does not alert', () {
+      expect(gate().accept('coughing', t0), isFalse);
+    });
+
+    test('two coughs a couple of seconds apart do alert', () {
+      final g = gate();
+      expect(g.accept('coughing', t0), isFalse);
+      expect(g.accept(null, t0.add(const Duration(seconds: 1))), isFalse);
+      expect(g.accept('coughing', t0.add(const Duration(seconds: 2))), isTrue);
+    });
+  });
 }

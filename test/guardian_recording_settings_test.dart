@@ -9,7 +9,7 @@ void main() {
     () {
       final settings = GuardianSettings.restore(null);
       expect(settings.rules['crying']!.minimumSeconds, 30);
-      expect(settings.rules['coughing']!.minimumSeconds, 8);
+      expect(settings.rules['coughing']!.minimumSeconds, 0);
       expect(settings.rules.values.every((rule) => !rule.recordAudio), isTrue);
     },
   );
