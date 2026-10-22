@@ -246,7 +246,6 @@ class HomeMonitor extends ChangeNotifier {
 
   Future<void> loadRecordings() async {
     if (_deviceRole != DeviceRole.away) return;
-    await _recordings.initialize();
     await _recordings.prune(retentionDays: _guardianSettings.retentionDays);
   }
 
