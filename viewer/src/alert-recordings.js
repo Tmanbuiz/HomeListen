@@ -215,7 +215,7 @@ export function createAlertRecordings(container) {
     const label = document.createElement("label"), check = document.createElement("input"); check.type = "checkbox"; check.checked = rules[category].recordAudio;
     label.append(check, document.createTextNode(`Record ${LABELS[category].toLowerCase()}`));
     check.addEventListener("change", () => { rules[category].recordAudio = check.checked; changed(); });
-    const hold = document.createElement("label"); hold.textContent = "Alert after ";
+    const hold = document.createElement("label"); hold.textContent = "Save episode after ";
     const select = document.createElement("select"); select.className = "field"; select.setAttribute("aria-label", `${LABELS[category]} minimum duration`);
     for (const seconds of [...new Set([0, 8, 15, 30, 60, 120, 300, rules[category].minimumSeconds])].sort((a, b) => a - b)) {
       const option = document.createElement("option"); option.value = String(seconds); option.textContent = seconds === 0 ? "Immediately" : seconds >= 60 ? `${seconds / 60} min` : `${seconds}s`;

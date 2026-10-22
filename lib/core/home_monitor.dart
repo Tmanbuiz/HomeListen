@@ -2258,6 +2258,8 @@ class HomeMonitor extends ChangeNotifier {
       .replaceFirst('Bad state: ', '')
       .replaceFirst('Exception: ', '');
   Future<void> stop() async {
+    final active = isActive;
+    _role = MonitorRole.idle;
     _epoch++;
     _recordingWatchdog?.cancel();
     _recordingWatchdog = null;
@@ -2267,7 +2269,6 @@ class HomeMonitor extends ChangeNotifier {
     _smartHome.clearPending();
     _suppressAuto = true;
     _wantListening = false;
-    final active = isActive;
     _role = MonitorRole.idle;
     await _cloud?.stopHome();
     await _cloud?.stopAway();

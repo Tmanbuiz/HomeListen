@@ -59,7 +59,10 @@ jobs:
       - run: flutter pub get
       - name: Check integration source formatting
         run: |
-          dart format --output=none --set-exit-if-changed lib/core/smart_home.dart lib/core/smart_home_settings.dart lib/core/smart_home_transport.dart lib/core/home_monitor.dart lib/core/sound_watch.dart lib/ui/smart_home_panel.dart lib/ui/home_monitor_page.dart test/smart_home_test.dart test/smart_home_interface_test.dart test/mqtt_broker_test.dart test/barking_false_alarm_test.dart
+          dart format --set-exit-if-changed lib/core/smart_home.dart lib/core/smart_home_settings.dart lib/core/smart_home_transport.dart lib/core/home_monitor.dart lib/core/sound_watch.dart lib/ui/smart_home_panel.dart lib/ui/home_monitor_page.dart test/smart_home_test.dart test/smart_home_interface_test.dart test/mqtt_broker_test.dart test/barking_false_alarm_test.dart || {
+            git diff -- lib/core/smart_home.dart lib/core/smart_home_settings.dart lib/core/smart_home_transport.dart lib/core/home_monitor.dart lib/core/sound_watch.dart lib/ui/smart_home_panel.dart lib/ui/home_monitor_page.dart test/smart_home_test.dart test/smart_home_interface_test.dart test/mqtt_broker_test.dart test/barking_false_alarm_test.dart
+            exit 1
+          }
       - run: flutter analyze
       - run: flutter test
       - name: Start authenticated Mosquitto test broker
