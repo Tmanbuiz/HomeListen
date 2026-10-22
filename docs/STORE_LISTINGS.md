@@ -10,10 +10,10 @@ Sound detection is not an emergency alarm. Keep that wording in every listing.
 
 | Item | Status |
 | --- | --- |
-| Privacy policy page | **Does not exist yet.** Both stores require a public URL. Needs to be written and hosted (for example `https://homelisten.oralyvo.app/privacy`). Ask Claude to draft it. |
-| Support page / email | **Does not exist yet.** Both stores require one. A mailbox you read is enough for Play; Apple needs a support URL. |
-| iPhone cloud mode | **Not built.** The README says native iOS cloud mode is not included; the iOS app only does Tailscale mode. A public App Store submission of the current build would very likely be rejected (Guideline 4.2, minimum functionality, and 2.1, a reviewer cannot try it). TestFlight *internal* testing of the current build is fine. |
-| iOS signing | `codemagic.yaml` makes an **unsigned** `.ipa`. TestFlight needs a signed build uploaded to App Store Connect, so Codemagic needs your App Store Connect API key and an App Store distribution profile. |
+| Privacy policy page | Written: `viewer/public/privacy.html`, served at `https://homelisten.oralyvo.app/privacy` after the Worker is deployed. Have it reviewed before you rely on it; Claude is not a lawyer. |
+| Support page | Written: `https://homelisten.oralyvo.app/support`, with `support@oralyvo.com` and `support@wiantribe.com`. Make sure both mailboxes exist and you read them, then deploy the Worker. The store consoles each take one support address; use `support@wiantribe.com` or `support@oralyvo.com`, whichever is the publisher's. |
+| iPhone cloud mode | **Built and merged.** The iPhone listens in cloud mode and can be a Guardian-only home phone. Live sharing from an iPhone home phone is not built. Still needed before it works: add the iOS app in Firebase, upload the APNs key, set `FIREBASE_IOS_APP_ID` and deploy (README, iPhone app setup). The main App Store review risk is now a reviewer who cannot try it without a second phone (Guideline 2.1). |
+| iOS signing | `ios-testflight` workflow added to `codemagic.yaml`. It needs the App Store Connect API key added in Codemagic as `homelisten-asc` and the app record created first (steps below). The older `ios-unsigned` workflow cannot go to TestFlight. |
 | Android signing | Needs your permanent key (`docs/ANDROID_RELEASE.md`). Play also needs an `.aab`, which the signed workflow already makes. |
 | Screenshots | Not in the repo. Needs real screenshots from your phones. |
 | Android foreground service | Play requires a declaration and a short demo video for `FOREGROUND_SERVICE_MICROPHONE` (see below). |
@@ -49,28 +49,30 @@ Home Listen
 Hear sound alerts from a phone left at home, on your own phone. Not an alarm.
 ```
 
-**Full description** [1,909/4,000]
+**Full description** [2,295/4,000]
 ```
-Home Listen turns an Android phone left at home into a quiet listening point, and sends sound alerts to your own phone.
+Home Listen turns a phone left at home into a quiet listening point, and sends sound alerts to your own phone.
 
 HOW IT WORKS
-• Leave an Android phone at home and switch Home Listen on. It shows a visible microphone notification with a Stop button the whole time.
+• Leave a phone at home and switch Home Listen on: an Android phone, or an iPhone in Guardian mode. A visible microphone indicator and a Stop control stay on the whole time (on Android, a notification with a Stop button).
 • Pair your own phone with a QR code or a link. Pairing links expire after 10 minutes.
-• Choose Guardian mode for sound alerts only, or Live + Guardian to also let an allowed listener hear the room live.
+• Choose Guardian mode for sound alerts only, or, on an Android home phone, Live + Guardian to also let an allowed listener hear the room live.
 
 WHAT YOU GET
 • Sound alerts on your phone when the home phone hears something you chose to be told about, such as barking, crying, loud noises or a doorbell.
 • An event history of recent alerts.
-• Optional live listening, only when the home phone is in Live + Guardian mode and your access allows it.
+• Optional live listening, only when an Android home phone is in Live + Guardian mode and your access allows it.
+• Optional recording: tick the sounds you want, and your listening phone saves short clips to its own storage. Off by default.
 • Up to five listening phones, each with its own access: caregiver, alerts only, or guest.
-• Works on Android and on an iPhone through the Home Screen web app.
+• Works on Android and iPhone, and in the iPhone Home Screen web app.
 • Optional Tailscale mode and Home Assistant / MQTT integration for people who want them.
 
 PRIVACY BY DESIGN
 • Listening starts only on the home phone itself. It can never be started from a notification, a restart or a remote request.
 • In Guardian mode no live audio is created at all.
-• Nothing is recorded. Home Listen does not save, upload or keep audio or transcripts. Only small alert details, such as the type of sound and the time, reach the service.
-• Sound recognition runs on the home phone.
+• Nothing is recorded unless you turn it on. Optional clips are saved only on the listening phone you choose, never on the home phone, and are never uploaded to our servers. You can export or delete them at any time.
+• Only small alert details, such as the type of sound and the time, reach the service.
+• Sound recognition runs on your phones, not on our servers.
 • You can remove a listening phone at any time and its access ends.
 
 IMPORTANT
@@ -104,7 +106,7 @@ Built by WianTribe Inc.
 | Question | Answer |
 | --- | --- |
 | Collects or shares data | Yes, collects. Does not share with third parties for their own use. |
-| Audio | **Not collected.** Audio is processed on the device and sent only as live WebRTC to a paired listener when the user turns Live mode on. Not stored. Declare "Voice or sound recordings: not collected". If Play's review disagrees, the safe wording is "processed ephemerally". |
+| Audio | **Not collected by the developer.** Live audio goes over WebRTC to a paired listener, only while the home owner has Live mode on, and is not stored by the service. Optional clips (off by default) are saved only in the listening device's own storage and never reach our servers. Declare "Voice or sound recordings: not collected". If Play's review disagrees, the safe wording is "processed ephemerally", plus an on-device-only note. |
 | Device or other IDs | Yes: Firebase anonymous ID and push token. Purpose: app functionality. |
 | App activity / other | Yes: alert type and time (event history). Purpose: app functionality. |
 | Encrypted in transit | Yes |
@@ -141,29 +143,36 @@ Console: https://appstoreconnect.apple.com → **Apps → + → New App**.
    Bundle ID `com.wiantribe.homeListen` (register it first under
    Certificates, Identifiers & Profiles → Identifiers, if it is not listed) ·
    SKU `homelisten-ios`.
-2. **Capabilities** on the App ID: Push Notifications (for the future cloud
-   mode). Background modes `audio` is already in `Info.plist`.
-3. Build upload: in Codemagic add the App Store Connect integration (API key:
-   Users and Access → Integrations → App Store Connect API → generate), set the
-   workflow to code-sign with an App Store profile and publish to TestFlight.
-   The current workflow produces only an unsigned `.ipa` and cannot do this.
-   Say if you want a signed `ios-testflight` workflow added.
+2. **Capabilities** on the App ID: Push Notifications (needed for alerts
+   in cloud mode). Background modes `audio` is already in `Info.plist`.
+3. In App Store Connect: Users and Access → Integrations → App Store Connect
+   API → generate a key (role App Manager) and download it once.
+4. In Codemagic: Teams → Integrations → App Store Connect → add that key and
+   name it exactly `homelisten-asc`. Then run the **iOS signed build to
+   TestFlight** workflow. Codemagic creates the certificate and profile, builds
+   a signed `.ipa` and uploads it. After Apple finishes processing (about 15
+   minutes), add yourself under TestFlight → Internal Testing.
+5. App Store Connect may ask the export-compliance question. Home Listen uses
+   standard encryption only (HTTPS and WebRTC); answer that it uses encryption
+   exempt from export documentation.
 
 ### TestFlight (internal testing)
 
 **Test information**
 
-Beta app description [about 290/4,000]
+Beta app description [342/4,000]
 ```
-Home Listen lets this iPhone act as a listener for a paired Android home phone. This build supports Tailscale mode only. You need an Android phone running Home Listen and Tailscale on both phones. Cloud mode, push alerts and QR pairing for iPhone are not in this build yet.
+Home Listen lets this iPhone listen to a paired home phone in cloud mode: it receives sound alerts and, when allowed, live sound. The iPhone can also be a Guardian home phone that sends sound alerts only. You need a second phone with Home Listen, or a pairing link from the tester. Live sharing from an iPhone home phone is not in this build.
 ```
 
-What to test [about 230/4,000]
+What to test [459/4,000]
 ```
-1. Pair with your home phone over Tailscale.
-2. Start live listening and check the sound is clear.
-3. Lock the screen and check whether audio continues.
-4. Stop listening and confirm the home phone shows it stopped.
+1. Pair with the home phone using a QR code or link.
+2. Enable alerts; make a sound at the home phone and check the push arrives with the app closed.
+3. Start live listening and check the sound is clear.
+4. Lock the screen and check whether audio continues.
+5. Stop listening and confirm the home phone shows it stopped.
+6. Try Guardian on the iPhone as the home phone with the screen locked for an hour.
 Report anything that crashes or shows the wrong state.
 ```
 
@@ -173,10 +182,10 @@ Internal testers (up to 100 people on your App Store Connect team) need no
 Apple review. External testers need a short **Beta App Review** and the
 description above.
 
-### App Store listing (for when cloud mode ships)
+### App Store listing
 
-Do not submit the current build to the App Store. Listing text is ready for the
-cloud-mode listener.
+Submit to the App Store only after TestFlight testing on real phones, the Firebase
+iOS app and APNs key are set up, and a working demo route for reviewers exists.
 
 **Name** [11/30]
 ```
@@ -188,9 +197,9 @@ Home Listen
 Sound alerts from your home
 ```
 
-**Promotional text** [130/170]
+**Promotional text** [156/170]
 ```
-Get sound alerts from the phone you left at home, and listen live when you choose to. Nothing is recorded. Not an emergency alarm.
+Get sound alerts from the phone you left at home, and listen live when you choose to. Recording is optional and stays on your phone. Not an emergency alarm.
 ```
 
 **Keywords** [90/100]
@@ -199,12 +208,12 @@ baby monitor,sound alert,home audio,listen,monitor,pet,nursery,intercom,guardian
 ```
 Avoid competitor names and "emergency", "security alarm", or medical claims.
 
-**Description** [1,498/4,000]
+**Description** [1,704/4,000]
 ```
-Home Listen works with an Android phone left at home. This iPhone becomes a listener: it receives sound alerts and, when you allow it, lets you hear the room live.
+Home Listen works with a phone left at home. This iPhone listens: it receives sound alerts and, when you allow it, lets you hear the room live. It can also be the home phone in Guardian mode, sending sound alerts only.
 
 HOW IT WORKS
-• Leave an Android phone at home running Home Listen. It shows a visible microphone notification with a Stop button the whole time it is on.
+• Leave a phone at home running Home Listen. On Android it shows a visible microphone notification with a Stop button; on iPhone, iOS shows its own recording indicator and Stop is on the Home screen.
 • Pair this iPhone by scanning a QR code or opening a link. Pairing links expire after 10 minutes.
 • Get alerts on this iPhone. Optionally listen live when the home phone is in Live + Guardian mode.
 
@@ -217,7 +226,7 @@ WHAT YOU GET
 
 PRIVACY
 • Listening starts only on the home phone. It cannot be started from a notification, a restart or a remote request.
-• Nothing is recorded. Audio is not saved, uploaded or kept. Only alert details, such as the type of sound and the time, are stored.
+• Nothing is recorded unless you turn it on. Optional clips are saved only on your own phone, never on the home phone and never uploaded. Only alert details, such as the type of sound and the time, are stored by the service.
 • Remove a listener at any time and its access ends.
 
 IMPORTANT
@@ -236,21 +245,21 @@ Built by WianTribe Inc.
 
 | Data type | Collected | Linked to user | Used for tracking |
 | --- | --- | --- | --- |
-| Audio data | **No** (processed live, never stored) | n/a | No |
+| Audio data | **No.** Processed live and optional clips stay on the device only; nothing is transmitted to the developer's servers | n/a | No |
 | Identifiers (device/user ID, push token) | Yes | Yes | No |
 | Other usage data (alert type and time) | Yes | Yes | No |
 | Everything else | No | | |
 
-If Apple's reviewers treat live audio as collection, change Audio to collected,
+If Apple's reviewers treat live audio or the extra recording channel as collection, change Audio to collected,
 not linked, not used for tracking, purpose App Functionality. State the choice
 in the privacy policy to match.
 
 ### App Review notes (paste in the review information box)
 
 ```
-Home Listen has two parts: an Android "home phone" and iPhone/Android "listener" phones. This iPhone app is a listener. To test without an Android phone, use the demo account/pairing link below.
+Home Listen has two parts: a "home phone" (Android, or an iPhone in Guardian mode) and "listener" phones. This iPhone app can be either. To test without a second phone, use the pairing link below.
 Demo pairing link: <ADD A WORKING DEMO LINK THAT STAYS VALID FOR REVIEW>
-The microphone permission is requested only if the user chooses to share this phone's microphone. The camera permission is used only on the pairing screen to scan a QR code. No audio is recorded or stored.
+The microphone permission is requested only if the user chooses to use this phone as the home phone; iOS then shows its recording indicator. The camera permission is used only on the pairing screen to scan a QR code. Recording of sound clips is optional, off by default, saved only on the user's own device and never uploaded.
 ```
 
 The pairing limits (10 minute links, five listeners) mean a normal link expires
@@ -260,7 +269,7 @@ likely cause of an "unable to test" rejection.
 ### Things Apple is likely to reject on
 
 1. No usable function without owning the Android home phone (2.1) → demo route.
-2. Current build has no cloud mode, only Tailscale (4.2).
+2. Recording audio: say plainly in the app and policy that clips are optional, on-device and deletable (5.1.1).
 3. Missing privacy policy or support URL (5.1.1).
 4. `UIBackgroundModes: audio` without background audio playing for the user (2.5.4). Keep it only if live listening plays in the background.
 5. Any wording that sounds like an emergency or safety guarantee (1.4).
