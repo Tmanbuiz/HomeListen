@@ -12,6 +12,7 @@ import '../protocols/mic_monitor.dart';
 import 'access_dialogs.dart';
 import 'design.dart';
 import 'guardian_panel.dart';
+import 'recordings_card.dart';
 import 'smart_home_panel.dart';
 import '../core/smart_home_settings.dart';
 
@@ -522,7 +523,7 @@ class _Dashboard extends StatelessWidget {
             const SizedBox(width: 6),
             Flexible(
               child: Text(
-                'Sound stays under your control. No audio recordings.',
+                'Sound stays under your control. Recording is optional on receiving devices.',
                 style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12),
               ),
             ),
@@ -724,6 +725,10 @@ class _ActivityState extends State<_Activity> {
                   ),
                 ),
               ),
+        if (monitor.deviceRole == DeviceRole.away) ...[
+          const SizedBox(height: 18),
+          RecordingsCard(monitor: monitor),
+        ],
         const SizedBox(height: 8),
         if (rows.length > _visible)
           TextButton(
@@ -731,7 +736,7 @@ class _ActivityState extends State<_Activity> {
             child: const Text('Show more events'),
           ),
         const Text(
-          'Only event details are saved on this phone. Sound detections are estimates; tap Home to listen and check.',
+          'History contains event details. Optional audio clips are listed separately below. Sound detections are estimates.',
           style: TextStyle(fontSize: 12),
         ),
         if (monitor.events.isNotEmpty)
@@ -1196,16 +1201,19 @@ class _Settings extends StatelessWidget {
             Wrap(
               spacing: 8,
               runSpacing: 6,
-              children: ['crying', 'barking', 'knocking', 'loud sound']
-                  .map(
-                    (name) => FilterChip(
-                      label: Text(HomeMonitor.soundCategoryLabel(name)),
-                      selected: monitor.soundWatch.categories.contains(name),
-                      onSelected: (value) =>
-                          monitor.toggleSoundCategory(name, value),
-                    ),
-                  )
-                  .toList(),
+              children:
+                  ['crying', 'coughing', 'barking', 'knocking', 'loud sound']
+                      .map(
+                        (name) => FilterChip(
+                          label: Text(HomeMonitor.soundCategoryLabel(name)),
+                          selected: monitor.soundWatch.categories.contains(
+                            name,
+                          ),
+                          onSelected: (value) =>
+                              monitor.toggleSoundCategory(name, value),
+                        ),
+                      )
+                      .toList(),
             ),
             const SizedBox(height: 18),
             const Text(
@@ -1259,9 +1267,9 @@ class _Settings extends StatelessWidget {
           ],
         ),
       ),
+      const SizedBox(height: 18),
+      GuardianSettingsCard(monitor: monitor),
       if (monitor.deviceRole == DeviceRole.home) ...[
-        const SizedBox(height: 18),
-        GuardianSettingsCard(monitor: monitor),
         const SizedBox(height: 18),
         SmartHomeCard(monitor: monitor),
       ],
@@ -1278,7 +1286,7 @@ class _Settings extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             const Text(
-              'Cloud audio uses encrypted WebRTC; Tailscale mode uses your private network. Sound detection runs locally. Sharing starts from a tap at home. No audio recordings are saved.',
+              'Cloud audio uses encrypted WebRTC; Tailscale mode uses your private network. Sound detection runs locally. Sharing starts from a tap at home. Audio is saved only on receiving devices when you enable an alert’s recording checkbox; it is not uploaded.',
             ),
             const SizedBox(height: 14),
             const Text(

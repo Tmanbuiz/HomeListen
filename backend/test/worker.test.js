@@ -543,3 +543,18 @@ test("a stranger locking the join path does not lock the owner out of their own 
   const off = await s.api("/rooms/" + id + "/totp-off", "home", { code: await codeNow(s, secret) });
   assert.equal(off.status, 200);
 });
+
+
+test("coughing alerts use a distinct category and notification title", async () => {
+  const s = setup(); const { id, secret } = await s.home();
+  await s.join(id, secret);
+  await s.api("/rooms/" + id + "/state", "home", { sharing: true, audioAvailable: false });
+  await s.api("/rooms/" + id + "/device", "away", { kind: "fcm", token: "x".repeat(64) });
+  const result = await s.api("/rooms/" + id + "/alerts", "home", {
+    kind: "coughing", id: "cough_event_1234567890123456",
+  });
+  assert.equal(result.status, 200);
+  assert.equal(s.pushes.length, 1);
+  assert.equal(s.pushes[0].payload.kind, "coughing");
+  assert.equal(s.pushes[0].payload.title, "Possible coughing");
+});

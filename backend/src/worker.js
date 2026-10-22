@@ -14,6 +14,7 @@ const TOTP_MAX_FAILURES = 5;
 const TOTP_LOCK_MS = 10 * 60_000;
 const titles = {
   crying: "Possible crying",
+  coughing: "Possible coughing",
   barking: "Possible dog sound",
   knocking: "Possible knock or doorbell",
   loud: "Possible loud sound",

@@ -28,7 +28,7 @@ Use specialists when the scope benefits; do not launch all roles for a small edi
 - Guardian creates no live audio track. Preserve platform capabilities: Android supports Live + Guardian; iPhone home mode currently supports Guardian.
 - Stop cancels capture, peers and reconnect attempts. Revocation and expired access must block future signaling and alerts.
 - Preserve invitation expiry, role checks, session/generation checks, TOTP replay prevention and throttling.
-- Keep detection local and audio unrecorded unless the user explicitly changes that product requirement.
+- Keep detection local. Audio recording is opt-in per alert and receiving-device-only; never save clips on the home phone or upload them. Preserve active-live-session authorization, Stop, revocation, expiry and recording-gap handling.
 - Never commit signing keys, service-account JSON, push private keys, TURN secrets or real household data. Redact sensitive logs.
 - Test Worker authorization separately from Firestore rules; privileged server credentials bypass client rules.
 

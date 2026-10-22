@@ -15,6 +15,8 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'cloud_pairing.dart';
+import 'guardian_settings.dart';
+import 'recording_wire.dart';
 import 'alert_inbox.dart';
 
 /// A refusal from the server. [code] says why when the app can act on it, e.g.
@@ -109,6 +111,9 @@ class CloudConnection {
     required this.onPcm,
     required this.onAlert,
     this.onLevel,
+    this.onRecordingPcm,
+    this.onRecordingVerdict,
+    this.onRecordingInterrupted,
   });
   final String origin;
   final SharedPreferences prefs;
@@ -116,6 +121,138 @@ class CloudConnection {
   final void Function() onChanged;
   final void Function(String) onProblem;
   final void Function(Int16List) onPcm;
+  final void Function(Int16List)? onRecordingPcm;
+  final void Function(String?, DateTime, double?)? onRecordingVerdict;
+  final void Function()? onRecordingInterrupted;
+  bool recordingRequested = false;
+  int _pcmSequence = 0;
+
+  void requestRecordingAudio(bool enabled) {
+    recordingRequested = enabled;
+    final channel = _away?.recordingChannel;
+    if (channel?.state == RTCDataChannelState.RTCDataChannelOpen) {
+      unawaited(
+        channel!
+            .send(RTCDataChannelMessage(enabled ? 'subscribe' : 'unsubscribe'))
+            .catchError((Object _) {}),
+      );
+    }
+    if (!enabled) onRecordingInterrupted?.call();
+  }
+
+  void publishRecordingVerdict(String? category, DateTime at, double? score) {
+    if (!home || !sharing) return;
+    final message = RTCDataChannelMessage(
+      jsonEncode({
+        'type': 'verdict',
+        'category': category,
+        'at': at.millisecondsSinceEpoch,
+        'score': score,
+      }),
+    );
+    for (final peer in _peers.values) {
+      if (peer.recordingSubscribed && !peer.closed) peer.sendRecording(message);
+    }
+  }
+
+  void _publishRecordingPcm(Uint8List pcm) {
+    final sequence = _pcmSequence++;
+    if (!sharing || pcm.length > 6400 || pcm.length.isOdd) return;
+    final packet = RTCDataChannelMessage.fromBinary(
+      AlertAudioPacket.encode(
+        sequence,
+        DateTime.now().millisecondsSinceEpoch,
+        pcm,
+      ),
+    );
+    for (final peer in _peers.values) {
+      if (peer.recordingSubscribed && !peer.closed) peer.sendRecording(packet);
+    }
+  }
+
+  void _acceptRecordingChannel(_CloudPeer peer, RTCDataChannel channel) {
+    if (channel.label != alertAudioChannel ||
+        peer.recordingChannel != null ||
+        peer.closed) {
+      unawaited(channel.close());
+      return;
+    }
+    peer.recordingChannel = channel;
+    channel.onMessage = (message) {
+      if (peer.closed ||
+          !sharing ||
+          (!message.isBinary && message.text.length > 32)) {
+        return;
+      }
+      if (message.isBinary) return;
+      if (message.text == 'subscribe') peer.recordingSubscribed = true;
+      if (message.text == 'unsubscribe') peer.recordingSubscribed = false;
+    };
+    channel.onDataChannelState = (state) {
+      if (state != RTCDataChannelState.RTCDataChannelOpen) {
+        peer.recordingSubscribed = false;
+      }
+    };
+  }
+
+  Future<void> _receiveRecordingChannel(_CloudPeer peer) async {
+    final channel = await peer.pc.createDataChannel(
+      alertAudioChannel,
+      RTCDataChannelInit(),
+    );
+    if (peer.closed) {
+      await channel.close();
+      return;
+    }
+    peer.recordingChannel = channel;
+    int? lastSequence, lastClock, lastSamples;
+    channel.onDataChannelState = (state) {
+      if (peer.closed || _away != peer) return;
+      if (state == RTCDataChannelState.RTCDataChannelOpen) {
+        requestRecordingAudio(recordingRequested);
+      } else {
+        onRecordingInterrupted?.call();
+      }
+    };
+    channel.onMessage = (message) {
+      if (peer.closed || _away != peer || !recordingRequested) return;
+      if (message.isBinary) {
+        final packet = AlertAudioPacket.decode(message.binary);
+        if (packet == null) return;
+        final gap =
+            lastSequence != null &&
+            (packet.sequence != ((lastSequence! + 1) & 0xffffffff) ||
+                ((packet.clock - lastClock!) & 0xffffffff) >
+                    (lastSamples! * 1000 ~/ 16000) + 80);
+        if (gap) onRecordingInterrupted?.call();
+        lastSequence = packet.sequence;
+        lastClock = packet.clock;
+        lastSamples = packet.pcm.length;
+        onRecordingPcm?.call(packet.pcm);
+      } else if (message.text.length <= 512) {
+        try {
+          final data = jsonDecode(message.text);
+          if (data is! Map || data['type'] != 'verdict') return;
+          final category = data['category'];
+          if (category != null && !guardianCategories.contains(category)) {
+            return;
+          }
+          final at = data['at'];
+          if (at is! int) return;
+          final score = data['score'];
+          onRecordingVerdict?.call(
+            category as String?,
+            DateTime.now(),
+            score is num && score.isFinite
+                ? score.toDouble().clamp(0, 1)
+                : null,
+          );
+        } on FormatException {
+          /* Ignore invalid peer metadata. */
+        }
+      }
+    };
+  }
 
   /// Loudness of the sound arriving from the home phone, 0 to 1, about seven
   /// times a second. A listener never has the sound samples (WebRTC plays them
@@ -552,6 +689,7 @@ class CloudConnection {
           (event) {
             if (event is Uint8List) {
               if (!ready.isCompleted) ready.complete();
+              _publishRecordingPcm(event);
               final data = ByteData.sublistView(event);
               onPcm(
                 Int16List.fromList(
@@ -748,6 +886,8 @@ class CloudConnection {
         return;
       }
       _peers[id] = peer;
+      peer.pc.onDataChannel = (channel) =>
+          _acceptRecordingChannel(peer!, channel);
       for (final track in _stream!.getAudioTracks()) {
         await peer.pc.addTrack(track, _stream!);
       }
@@ -839,6 +979,7 @@ class CloudConnection {
       return;
     }
     _away = peer;
+    await _receiveRecordingChannel(peer);
     _startLevels(peer);
     peer.pc.onTrack = (event) {
       event.track.enabled = true;
@@ -925,7 +1066,9 @@ class CloudConnection {
     String title, {
     String? eventId,
   }) async {
-    final kind = title.toLowerCase().contains('cry')
+    final kind = title.toLowerCase().contains('cough')
+        ? 'coughing'
+        : title.toLowerCase().contains('cry')
         ? 'crying'
         : title.toLowerCase().contains('bark') ||
               title.toLowerCase().contains('dog')
@@ -1011,6 +1154,7 @@ class CloudConnection {
     final peer = _away;
     _away = null;
     hearing = false;
+    onRecordingInterrupted?.call();
     await peer?.close();
     if (disableAlerts && alertsEnabled) {
       try {
@@ -1097,6 +1241,31 @@ class _CloudPeer {
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _candidates;
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _session;
   MediaStreamTrack? remoteTrack;
+  RTCDataChannel? recordingChannel;
+  bool recordingSubscribed = false;
+  int _recordingPending = 0;
+  Future<void> _recordingTail = Future<void>.value();
+
+  void sendRecording(RTCDataChannelMessage message) {
+    final channel = recordingChannel;
+    if (closed ||
+        _recordingPending >= 4 ||
+        channel == null ||
+        channel.state != RTCDataChannelState.RTCDataChannelOpen ||
+        (channel.bufferedAmount ?? 0) > 16000) {
+      return;
+    }
+    _recordingPending++;
+    _recordingTail = _recordingTail
+        .then((_) async {
+          if (!closed && recordingSubscribed) await channel.send(message);
+        })
+        .catchError((Object _) {})
+        .whenComplete(() {
+          _recordingPending--;
+        });
+  }
+
   Timer? _timeout, _expiry, _refresh;
   Future<void> Function()? renewIce;
   bool connected = false, closed = false, _answerBusy = false;
@@ -1251,6 +1420,15 @@ class _CloudPeer {
     _refresh?.cancel();
     await _session?.cancel();
     await _candidates?.cancel();
+    recordingSubscribed = false;
+    final channel = recordingChannel;
+    recordingChannel = null;
+    if (channel != null) {
+      channel.onMessage = null;
+      channel.onDataChannelState = null;
+      await channel.close();
+    }
+    pc.onDataChannel = null;
     pc.onTrack = null;
     pc.onIceCandidate = null;
     pc.onConnectionState = null;

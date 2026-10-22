@@ -21,7 +21,7 @@ blueprint:
       selector:
         select:
           multiple: true
-          options: [crying, barking, knocking, loud_sound, test]
+          options: [crying, coughing, barking, knocking, loud_sound, test]
     profiles:
       name: House modes
       default: [home, away, night]

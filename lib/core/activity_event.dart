@@ -107,7 +107,7 @@ class ActivityEvent {
                   ? row['modelVersion']
                   : null,
               durationMs: row['durationMs'] is int
-                  ? (row['durationMs'] as int).clamp(0, 60000)
+                  ? (row['durationMs'] as int).clamp(0, 600000)
                   : null,
               delivery:
                   AlertDelivery.values

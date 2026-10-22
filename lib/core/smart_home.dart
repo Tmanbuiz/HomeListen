@@ -239,6 +239,7 @@ class SmartHomeIntegration {
         : event.category;
     if (![
       'crying',
+      'coughing',
       'barking',
       'knocking',
       'loud_sound',

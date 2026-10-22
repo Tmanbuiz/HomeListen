@@ -10,7 +10,7 @@ This new repository builds on the owner's [PhoneListen](https://github.com/Tmanb
 - Encrypted WebRTC live audio, anonymous Firebase identity and private Firestore signaling.
 - QR/link invitations expiring after 10 minutes, up to five paired listening phones, and revocation at home.
 - Optional second way in: a pairing link joins, or so does the home secret answer plus a 6-digit code from an authenticator app (Google/Microsoft Authenticator, Authy), with no link. The answer finds the home, the code proves it is you. Codes are single-use, and five wrong codes lock that way in for 10 minutes. Turn it on in Devices on the home phone; turning it off needs a code. A leaked link alone still joins, so keep links private.
-- Local detection of possible crying, dog sounds, knocks/doorbells and loud sounds, with per-category rules, quiet hours and cooldowns. Only alert metadata reaches the backend; no audio recordings are saved.
+- Local detection of possible crying, coughing, dog sounds, knocks/doorbells and loud sounds, with per-category rules, quiet hours and cooldowns. Only alert metadata reaches the backend. Optional alert recordings stay on the receiving device; see [Alert recordings](docs/ALERT_RECORDINGS.md).
 - Searchable event history, daily counts, configurable retention, JSON export and retry status. A bounded outbox retries failed push requests using stable event IDs.
 - Caregiver, alerts-only and expiring guest access, enforced by the API and Firestore rules.
 - Android FCM and iPhone Home Screen Web Push, including alerts without a live audio connection.
@@ -91,7 +91,7 @@ The final backend command is a deployment dry run. For local preview, build view
 
 ## Audio and access
 
-Guardian captures mono 16 kHz PCM locally with the Android recorder and creates no WebRTC microphone track. Live + Guardian opens one WebRTC microphone track; a Kotlin sample tap feeds its mono 16 kHz PCM to the local classifier. A muted peer pair inside the home phone keeps this live-mode capture active with no listeners. It has no ICE servers and never plays audio.
+Guardian captures mono 16 kHz PCM locally with the Android recorder and creates no WebRTC microphone track. Guardian mode does not send recording audio to receivers. Live + Guardian opens one WebRTC microphone track; a Kotlin sample tap feeds its mono 16 kHz PCM to the local classifier. A muted peer pair inside the home phone keeps this live-mode capture active with no listeners. It has no ICE servers and never plays audio.
 
 Each viewer has one current session, replaced on reconnect and expiring after two hours. Native Android reconnects while listening remains enabled; Stop cancels recovery. The web app asks for another tap after a failed or expired session.
 
