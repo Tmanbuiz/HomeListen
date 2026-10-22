@@ -36,20 +36,19 @@ class RecordingClip {
 /// Call [stop] immediately on disconnect, Stop, or recording-policy changes.
 class EpisodeRecordings {
   EpisodeRecordings({
-    required Future<Directory> Function() directory,
+    required this.directory,
     this.onChanged,
     this.onError,
     DateTime Function()? clock,
     this.maximumClipSeconds = 600,
     this.maximumClips = 100,
     this.maximumBytes = 200 * 1024 * 1024,
-  }) : _directory = directory,
-       _clock = clock ?? DateTime.now;
+  }) : _clock = clock ?? DateTime.now;
 
   static const sampleRate = 16000;
   static const gapSamples = sampleRate * 2;
   static const _maximumPendingSamples = sampleRate * 4;
-  final Future<Directory> Function() _directory;
+  final Future<Directory> Function() directory;
   final DateTime Function() _clock;
   final void Function()? onChanged;
   final void Function(String)? onError;
@@ -71,8 +70,10 @@ class EpisodeRecordings {
   Future<void> drain() => _tail;
 
   Future<void> _initialize() async {
-    if (_root != null) return;
-    final root = await _directory();
+    if (_root != null) {
+      return;
+    }
+    final root = await directory();
     await root.create(recursive: true);
     _root = root;
     // A killed receiver must not leave unqualified sound candidates behind.
@@ -91,13 +92,18 @@ class EpisodeRecordings {
             if (row is! Map ||
                 row['name'] is! String ||
                 row['category'] is! String ||
-                row['durationMs'] is! int)
+                row['durationMs'] is! int) {
               continue;
+            }
             final name = row['name'] as String;
-            if (!RegExp(r'^[A-Za-z0-9_-]+\.wav$').hasMatch(name)) continue;
+            if (!RegExp(r'^[A-Za-z0-9_-]+\.wav$').hasMatch(name)) {
+              continue;
+            }
             final at = DateTime.tryParse('${row['startedAt']}');
             final path = '${root.path}/$name';
-            if (at == null || !await File(path).exists()) continue;
+            if (at == null || !await File(path).exists()) {
+              continue;
+            }
             _clips.add(
               RecordingClip(
                 name: name,
@@ -132,7 +138,9 @@ class EpisodeRecordings {
 
   /// This call never blocks the playback or capture stream on disk I/O.
   void feed(Int16List pcm) {
-    if (pcm.isEmpty) return;
+    if (pcm.isEmpty) {
+      return;
+    }
     if (_pendingSamples + pcm.length > _maximumPendingSamples) {
       if (!_overflow) {
         _overflow = true;
@@ -199,8 +207,9 @@ class EpisodeRecordings {
             }
           }
           _ring.addAll(copy);
-          if (_ring.length > sampleRate)
+          if (_ring.length > sampleRate) {
             _ring.removeRange(0, _ring.length - sampleRate);
+          }
         } finally {
           _pendingSamples -= copy.length;
         }
@@ -226,7 +235,9 @@ class EpisodeRecordings {
             candidate = null;
           }
         }
-        if (category == null) return;
+        if (category == null) {
+          return;
+        }
         if (!recordAudio) {
           if (candidate?.category == category) {
             await _finish();
@@ -235,7 +246,9 @@ class EpisodeRecordings {
           return;
         }
         if (candidate == null) {
-          if (_ring.isEmpty) return;
+          if (_ring.isEmpty) {
+            return;
+          }
           await _initialize();
           final startedAt = at.subtract(
             Duration(microseconds: _ring.length * 1000000 ~/ sampleRate),
@@ -257,7 +270,9 @@ class EpisodeRecordings {
               candidate.qualified ||
               candidate.lastMatch - candidate.startSample >=
                   candidate.minimumSamples;
-          if (wasQualified != candidate.qualified) onChanged?.call();
+          if (wasQualified != candidate.qualified) {
+            onChanged?.call();
+          }
         }
       }),
     );
@@ -294,14 +309,17 @@ class EpisodeRecordings {
       minimumSamples: minimumSamples,
     );
     _candidate = candidate;
-    if (initial.isNotEmpty)
+    if (initial.isNotEmpty) {
       await file.writeFrom(_bytes(initial, initial.length));
+    }
     return candidate;
   }
 
   Future<void> _finish({bool trimSilence = true}) async {
     final candidate = _candidate;
-    if (candidate == null) return;
+    if (candidate == null) {
+      return;
+    }
     _candidate = null;
     await candidate.file.close();
     if (!candidate.qualified) {
@@ -326,7 +344,7 @@ class EpisodeRecordings {
     final prefix =
         '${local.year}-${two(local.month)}-${two(local.day)}_'
         '${two(local.hour)}-${two(local.minute)}-${two(local.second)}-'
-        '${local.millisecond.toString().padLeft(3, '0')}_${label}';
+        '${local.millisecond.toString().padLeft(3, '0')}_$label';
     var name = '${prefix}_${_serial++}.wav';
     while (await File('${_root!.path}/$name').exists()) {
       name = '${prefix}_${_serial++}.wav';
@@ -344,12 +362,15 @@ class EpisodeRecordings {
         left -= chunk.length;
       }
       complete = left == 0;
-      if (!complete)
+      if (!complete) {
         throw const FileSystemException('Incomplete audio candidate');
+      }
     } finally {
       await target?.close();
       await candidate.temp.delete();
-      if (!complete && await writing.exists()) await writing.delete();
+      if (!complete && await writing.exists()) {
+        await writing.delete();
+      }
     }
     await writing.rename(output.path);
     _clips.insert(
@@ -375,11 +396,17 @@ class EpisodeRecordings {
     );
     final known = _clips.map((c) => c.name).toSet();
     await for (final entity in root.list()) {
-      if (entity is! File) continue;
+      if (entity is! File) {
+        continue;
+      }
       final name = entity.uri.pathSegments.last;
-      if (known.contains(name)) continue;
+      if (known.contains(name)) {
+        continue;
+      }
       final match = pattern.firstMatch(name);
-      if (match == null) continue;
+      if (match == null) {
+        continue;
+      }
       final bytes = await entity
           .openRead(0, math.min(44, await entity.length()))
           .fold<List<int>>([], (result, chunk) => result..addAll(chunk));
@@ -425,21 +452,27 @@ class EpisodeRecordings {
   Future<void> _discard() async {
     final candidate = _candidate;
     _candidate = null;
-    if (candidate == null) return;
+    if (candidate == null) {
+      return;
+    }
     try {
       await candidate.file.close();
     } catch (_) {
       /* Already closed. */
     }
     try {
-      if (await candidate.temp.exists()) await candidate.temp.delete();
+      if (await candidate.temp.exists()) {
+        await candidate.temp.delete();
+      }
     } catch (_) {
       /* Startup cleanup retries deleting abandoned candidates. */
     }
   }
 
   Future<void> prune({int? retentionDays}) => _enqueue(() async {
-    if (retentionDays != null) this.retentionDays = retentionDays.clamp(1, 30);
+    if (retentionDays != null) {
+      this.retentionDays = retentionDays.clamp(1, 30);
+    }
     await _initialize();
     await _prune();
     onChanged?.call();
@@ -447,7 +480,9 @@ class EpisodeRecordings {
 
   Future<void> _prune() async {
     final root = _root;
-    if (root == null) return;
+    if (root == null) {
+      return;
+    }
     _clips.sort((a, b) => b.startedAt.compareTo(a.startedAt));
     final cutoff = _clock().subtract(Duration(days: retentionDays));
     var bytes = 0, kept = 0;
@@ -459,7 +494,9 @@ class EpisodeRecordings {
           clip.startedAt.isBefore(cutoff) ||
           kept >= maximumClips ||
           bytes + size > maximumBytes) {
-        if (exists) await file.delete();
+        if (exists) {
+          await file.delete();
+        }
         _clips.remove(clip);
       } else {
         kept++;
@@ -475,9 +512,13 @@ class EpisodeRecordings {
   }
 
   Future<void> delete(RecordingClip clip) => _enqueue(() async {
-    if (!_clips.contains(clip)) return;
+    if (!_clips.contains(clip)) {
+      return;
+    }
     final file = File(clip.path);
-    if (await file.exists()) await file.delete();
+    if (await file.exists()) {
+      await file.delete();
+    }
     _clips.remove(clip);
     await _prune();
     onChanged?.call();
@@ -489,7 +530,9 @@ class EpisodeRecordings {
     await _initialize();
     for (final clip in _clips) {
       final file = File(clip.path);
-      if (await file.exists()) await file.delete();
+      if (await file.exists()) {
+        await file.delete();
+      }
     }
     _clips.clear();
     await _prune();
@@ -498,16 +541,18 @@ class EpisodeRecordings {
 
   static Uint8List _bytes(Int16List samples, int count) {
     final bytes = ByteData(count * 2);
-    for (var i = 0; i < count; i++)
+    for (var i = 0; i < count; i++) {
       bytes.setInt16(i * 2, samples[i], Endian.little);
+    }
     return bytes.buffer.asUint8List();
   }
 
   static Uint8List _wavHeader(int dataBytes) {
     final bytes = ByteData(44);
     void text(int offset, String value) {
-      for (var i = 0; i < value.length; i++)
+      for (var i = 0; i < value.length; i++) {
         bytes.setUint8(offset + i, value.codeUnitAt(i));
+      }
     }
 
     text(0, 'RIFF');

@@ -115,8 +115,9 @@ class HomeMonitor extends ChangeNotifier {
     _recordings = EpisodeRecordings(
       directory: () async {
         final path = await _channel.invokeMethod<String>('recordingsDirectory');
-        if (path == null || path.isEmpty)
+        if (path == null || path.isEmpty) {
           throw StateError('Recording storage unavailable');
+        }
         return Directory(path);
       },
       onChanged: _notify,
@@ -422,8 +423,9 @@ class HomeMonitor extends ChangeNotifier {
       } else {
         _remoteStatusAt = null;
       }
-      if (isListening && (!cloud.listening || !cloud.hearing))
+      if (isListening && (!cloud.listening || !cloud.hearing)) {
         _interruptRecording();
+      }
       if (isListening && !cloud.listening) {
         _role = MonitorRole.idle;
       }
@@ -782,6 +784,7 @@ class HomeMonitor extends ChangeNotifier {
     } catch (_) {
       _error = 'Secure pairing storage could not be opened. Restart the app before pairing or sharing.';
     }
+    if (_deviceRole == DeviceRole.away) await loadRecordings();
     await _refreshHealth();
     if (cloudMode && cloudServer.isNotEmpty) {
       unawaited(
@@ -827,6 +830,7 @@ class HomeMonitor extends ChangeNotifier {
     }
     _deviceRole = value;
     await prefs?.setString('device_role', value.name);
+    if (value == DeviceRole.away) await loadRecordings();
     unawaited(_connectSmartHome());
     _suppressAuto = false;
     _notify();
@@ -1461,8 +1465,9 @@ class HomeMonitor extends ChangeNotifier {
   Future<void> setRetentionDays(int days) async {
     _guardianSettings = _guardianSettings.copyWith(retentionDays: days);
     _pruneActivity();
-    if (_deviceRole == DeviceRole.away)
+    if (_deviceRole == DeviceRole.away) {
       await _recordings.prune(retentionDays: days);
+    }
     await _saveGuardianSettings();
     await _saveActivity();
     _notify();

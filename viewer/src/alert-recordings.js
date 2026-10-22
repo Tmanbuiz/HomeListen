@@ -70,7 +70,30 @@ export class EpisodeRecorder {
     if (active) {
       if (this.waitingForVerdicts) this.finish("detector updates paused");
       else if (this.now() - active.lastMatched > GAP) this.finish();
-      else if (active.size + pcm.byteLength > MAX_CLIP_BYTES) this.finish("10 minute limit");
+      else if (active.size + pcm.byteLength > MAX_CLIP_BYTES) {
+        // A size split is still the same sound episode. Finalize only through
+        // its last match, then carry the unconfirmed tail into the next file.
+        // Do not reapply the30s hold or duplicate the1s prebuffer at this seam.
+        const split = active.lastMatchedBytes;
+        let skipped = 0;
+        const tail = [];
+        for (const part of active.parts) {
+          if (skipped + part.byteLength > split) tail.push(part.subarray(Math.max(0, split - skipped)));
+          skipped += part.byteLength;
+        }
+        const carry = active.size - split;
+        this.finish("10 minute limit");
+        if (active.qualified) {
+          this.candidate = {
+            category: active.category,
+            startedAt: active.startedAt + Math.round(split / RATE * 1000),
+            started: this.now() - carry / RATE * 1000,
+            lastMatched: active.lastMatched, lastMatchedBytes: 0,
+            parts: [...tail, pcm], size: carry + pcm.byteLength, qualified: true
+          };
+          this.onState(true);
+        }
+      }
       else { active.parts.push(pcm); active.size += pcm.byteLength; }
     }
     this.pre.push(pcm); this.preBytes += pcm.byteLength;
@@ -106,7 +129,7 @@ export class EpisodeRecorder {
   finish(reason = "sound ended") {
     const active = this.candidate;
     this.candidate = null;
-    if (active?.qualified && active.size) {
+    if (active?.qualified && active.lastMatchedBytes > 0) {
       // The2s grace period joins brief pauses but is not part of the sound's
       // final clip. Keep samples only through the last matching verdict.
       const size = active.lastMatchedBytes;

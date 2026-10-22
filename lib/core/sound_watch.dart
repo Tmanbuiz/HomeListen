@@ -50,15 +50,17 @@ class SoundGate {
       final last = _lastHitAt;
       if (toleratedGap > Duration.zero &&
           last != null &&
-          at.difference(last) < toleratedGap)
+          at.difference(last) < toleratedGap) {
         return false;
+      }
       reset();
       return false;
     }
     if (toleratedGap > Duration.zero &&
         _lastHitAt != null &&
-        at.difference(_lastHitAt!) >= toleratedGap)
+        at.difference(_lastHitAt!) >= toleratedGap) {
       reset();
+    }
     _lastHitAt = at;
     if (burst.containsKey(category)) {
       final hits = _recent.putIfAbsent(category, () => []);

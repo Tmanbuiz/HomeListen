@@ -181,15 +181,17 @@ class CloudConnection {
     channel.onMessage = (message) {
       if (peer.closed ||
           !sharing ||
-          (!message.isBinary && message.text.length > 32))
+          (!message.isBinary && message.text.length > 32)) {
         return;
+      }
       if (message.isBinary) return;
       if (message.text == 'subscribe') peer.recordingSubscribed = true;
       if (message.text == 'unsubscribe') peer.recordingSubscribed = false;
     };
     channel.onDataChannelState = (state) {
-      if (state != RTCDataChannelState.RTCDataChannelOpen)
+      if (state != RTCDataChannelState.RTCDataChannelOpen) {
         peer.recordingSubscribed = false;
+      }
     };
   }
 
@@ -232,8 +234,9 @@ class CloudConnection {
           final data = jsonDecode(message.text);
           if (data is! Map || data['type'] != 'verdict') return;
           final category = data['category'];
-          if (category != null && !guardianCategories.contains(category))
+          if (category != null && !guardianCategories.contains(category)) {
             return;
+          }
           final at = data['at'];
           if (at is! int) return;
           final score = data['score'];
@@ -1249,8 +1252,9 @@ class _CloudPeer {
         _recordingPending >= 4 ||
         channel == null ||
         channel.state != RTCDataChannelState.RTCDataChannelOpen ||
-        (channel.bufferedAmount ?? 0) > 16000)
+        (channel.bufferedAmount ?? 0) > 16000) {
       return;
+    }
     _recordingPending++;
     _recordingTail = _recordingTail
         .then((_) async {

@@ -123,7 +123,7 @@ class _RecordingsCardState extends State<RecordingsCard> {
                       final message = await widget.monitor.exportRecording(
                         clip,
                       );
-                      if (!mounted) return;
+                      if (!context.mounted) return;
                       ScaffoldMessenger.of(
                         context,
                       ).showSnackBar(SnackBar(content: Text(message)));

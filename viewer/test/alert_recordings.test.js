@@ -131,6 +131,34 @@ test("hard cap bounds a single candidate to10minutes", () => {
   assert.equal(f.clips[0].reason, "10 minute limit");
 });
 
+test("qualified crying continues across size split without another30s hold or overlapping samples", () => {
+  const f = fixture("crying", 30);
+  for (let i = 0; i < 6010; i++) f.advance();
+  assert.equal(f.clips.length, 1);
+  assert.equal(f.recorder.recording, true);
+  f.recorder.stop();
+  assert.equal(f.clips.length, 2);
+  assert.equal(f.clips[0].durationMs, 600000);
+  assert.equal(f.clips[1].durationMs, 1000);
+  assert.equal(f.clips[1].startedAt, f.clips[0].startedAt + f.clips[0].durationMs);
+  assert.equal(f.clips.reduce((sum, clip) => sum + clip.size - 44, 0), 601000 * 32);
+});
+
+test("split carries unconfirmed tail exactly once and final trim follows last match", () => {
+  const f = fixture("crying", 30);
+  for (let i = 0; i < 6350; i++) {
+    f.jump(100); f.recorder.feed(packet(i, f.now));
+    // Deliberately misalign detector windows and the10-minute audio boundary.
+    if (i % 5 === 1) f.recorder.observe("crying", f.now);
+  }
+  f.recorder.stop();
+  assert.equal(f.clips.length, 2);
+  assert.equal(f.clips[0].durationMs, 599700);
+  assert.equal(f.clips[1].durationMs, 35000);
+  assert.equal(f.clips[1].startedAt, f.clips[0].startedAt + f.clips[0].durationMs);
+  assert.equal(f.clips.reduce((sum, clip) => sum + clip.size - 44, 0), 634700 * 32);
+});
+
 test("IndexedDB saves playable blobs, deletes, and prunes by age/count", async () => {
   const now = Date.UTC(2026, 9, 22), store = new RecordingStore(new IDBFactory(), () => now);
   const audio = wav([new Uint8Array(32)], 32);
