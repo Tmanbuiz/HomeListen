@@ -150,9 +150,8 @@ class _Setup extends StatelessWidget {
               Text(
                 'A little closer to home.',
                 textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                  fontWeight: FontWeight.w800,
-                ),
+                style: Theme.of(context).textTheme.headlineMedium
+                    ?.copyWith(fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 12),
               Text(
@@ -701,9 +700,9 @@ class _ActivityState extends State<_Activity> {
                                 '${event.room} • ${formatWhen(event.at)}',
                                 style: TextStyle(
                                   fontSize: 12,
-                                  color: Theme.of(
-                                    context,
-                                  ).colorScheme.onSurfaceVariant,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurfaceVariant,
                                 ),
                               ),
                               if (event.kind == ActivityKind.sound) ...[
@@ -745,9 +744,8 @@ class _ActivityState extends State<_Activity> {
             onPressed: () async {
               final message = await monitor.exportEventFile();
               if (context.mounted) {
-                ScaffoldMessenger.of(
-                  context,
-                ).showSnackBar(SnackBar(content: Text(message)));
+                ScaffoldMessenger.of(context)
+                    .showSnackBar(SnackBar(content: Text(message)));
               }
             },
             icon: const Icon(Icons.download_outlined),
@@ -930,9 +928,8 @@ class _Devices extends StatelessWidget {
                       if (code == null) return;
                       final error = await monitor.disableAuthenticator(code);
                       if (error != null && context.mounted) {
-                        ScaffoldMessenger.of(
-                          context,
-                        ).showSnackBar(SnackBar(content: Text(error)));
+                        ScaffoldMessenger.of(context)
+                            .showSnackBar(SnackBar(content: Text(error)));
                       }
                     },
                     child: Text(
@@ -1332,10 +1329,8 @@ class _Heading extends StatelessWidget {
     children: [
       Text(
         title,
-        style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-          fontWeight: FontWeight.w800,
-          letterSpacing: -.6,
-        ),
+        style: Theme.of(context).textTheme.headlineMedium
+            ?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -.6),
       ),
       const SizedBox(height: 8),
       Text(
@@ -1410,9 +1405,8 @@ Future<void> _rename(BuildContext context, HomeMonitor monitor) async {
 }
 
 Future<void> _scan(BuildContext context, HomeMonitor monitor) async {
-  final code = await Navigator.of(
-    context,
-  ).push<String>(MaterialPageRoute(builder: (_) => const _ScanPage()));
+  final code = await Navigator.of(context)
+      .push<String>(MaterialPageRoute(builder: (_) => const _ScanPage()));
   if (code != null && context.mounted) await _accept(context, monitor, code);
 }
 
@@ -1426,8 +1420,7 @@ Future<void> _accept(
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          monitor.error ??
-              'That code could not be paired. Use the code shown on your home phone.',
+          monitor.error ?? 'That code could not be paired. Use the code shown on your home phone.',
         ),
       ),
     );

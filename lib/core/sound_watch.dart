@@ -236,9 +236,11 @@ class SoundWatch {
   }
 
   Future<void> _initialize() async {
-    _labels = (await rootBundle.loadString(
-      'assets/models/yamnet_labels.txt',
-    )).trim().split('\n').map((l) => l.trim()).toList();
+    _labels = (await rootBundle.loadString('assets/models/yamnet_labels.txt'))
+        .trim()
+        .split('\n')
+        .map((l) => l.trim())
+        .toList();
     final interpreter = await Interpreter.fromAsset(
       'assets/models/yamnet.tflite',
       options: InterpreterOptions()..threads = 2,

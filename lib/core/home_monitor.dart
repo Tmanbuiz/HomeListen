@@ -780,8 +780,7 @@ class HomeMonitor extends ChangeNotifier {
       await prefs?.remove('paired_token');
       _securityReady = true;
     } catch (_) {
-      _error =
-          'Secure pairing storage could not be opened. Restart the app before pairing or sharing.';
+      _error = 'Secure pairing storage could not be opened. Restart the app before pairing or sharing.';
     }
     await _refreshHealth();
     if (cloudMode && cloudServer.isNotEmpty) {
@@ -1118,8 +1117,7 @@ class HomeMonitor extends ChangeNotifier {
         (_lastCaptureAt ?? _sessionStarted) != null &&
         DateTime.now().difference((_lastCaptureAt ?? _sessionStarted)!) >
             const Duration(seconds: 15)) {
-      _error =
-          'Monitoring stopped because microphone samples stopped arriving. Open Home and start again.';
+      _error = 'Monitoring stopped because microphone samples stopped arriving. Open Home and start again.';
       _addEvent(ActivityKind.disconnected, 'Microphone feed stopped');
       unawaited(stop());
     }
@@ -1351,8 +1349,7 @@ class HomeMonitor extends ChangeNotifier {
         },
         onError: (Object _) {
           if (epoch != _epoch || _disposed) return;
-          _error =
-              'Guardian stopped because its microphone feed failed. Start again from Home.';
+          _error = 'Guardian stopped because its microphone feed failed. Start again from Home.';
           unawaited(stop());
         },
         onDone: () {
@@ -2157,13 +2154,10 @@ class HomeMonitor extends ChangeNotifier {
         onTimeout: () => false,
       );
       if (_disposed) return;
-      if (!_notificationsAllowed)
-        _error =
-            'Sound Watch is active in the app. Enable notifications in phone settings for alerts outside this screen.';
+      if (!_notificationsAllowed) _error = 'Sound Watch is active in the app. Enable notifications in phone settings for alerts outside this screen.';
     } catch (e) {
       debugPrint('sound watch: failed to load: $e');
-      _error =
-          'Sound Watch could not load on this device. Live listening is available.';
+      _error = 'Sound Watch could not load on this device. Live listening is available.';
     } finally {
       _soundLoading = false;
       _notify();
