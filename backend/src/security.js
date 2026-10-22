@@ -138,6 +138,7 @@ export function publicConfig(env) {
       projectId: env.FIREBASE_PROJECT_ID,
       appId: env.FIREBASE_WEB_APP_ID,
       androidAppId: env.FIREBASE_ANDROID_APP_ID ?? "",
+      iosAppId: env.FIREBASE_IOS_APP_ID ?? "",
       messagingSenderId: env.FIREBASE_MESSAGING_SENDER_ID ?? "",
       authDomain: env.FIREBASE_PROJECT_ID + ".firebaseapp.com"
     },

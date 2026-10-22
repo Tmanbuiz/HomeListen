@@ -84,11 +84,17 @@ Future<void> homeListenBackgroundMessage(RemoteMessage message) async {
   await AlertInbox.save(prefs, Map<String, dynamic>.from(message.data));
 }
 
+/// The Firebase app ID this platform registered in the console.
+String _platformAppId(Map<String, dynamic> config) =>
+    (Platform.isIOS ? config['iosAppId'] : config['androidAppId']) as String? ??
+    '';
+
 FirebaseOptions _options(Map<String, dynamic> config) => FirebaseOptions(
   apiKey: config['apiKey'] as String,
-  appId: config['androidAppId'] as String,
+  appId: _platformAppId(config),
   messagingSenderId: config['messagingSenderId'] as String,
   projectId: config['projectId'] as String,
+  iosBundleId: Platform.isIOS ? 'com.wiantribe.homeListen' : null,
 );
 
 /// Firebase carries authenticated signaling and notifications. Audio is WebRTC.
@@ -180,10 +186,8 @@ class CloudConnection {
         throw error;
       });
   Future<void> _initialize() async {
-    if (!Platform.isAndroid) {
-      throw StateError(
-        'Cloud mode uses the Android app or the iPhone Home Screen web app. Choose Tailscale for native iOS.',
-      );
+    if (!(Platform.isAndroid || Platform.isIOS)) {
+      throw StateError('Cloud mode needs an Android phone or an iPhone.');
     }
     final response = await _client
         .get(Uri.parse('$origin/api/config'))
@@ -194,8 +198,12 @@ class CloudConnection {
       throw StateError(data['error'] ?? 'The cloud server is not ready.');
     }
     final config = Map<String, dynamic>.from(data['firebase'] as Map);
-    if ((config['androidAppId'] as String? ?? '').isEmpty) {
-      throw StateError('Add the Android Firebase app ID to the cloud server.');
+    if (_platformAppId(config).isEmpty) {
+      throw StateError(
+        Platform.isIOS
+            ? 'Add the iPhone Firebase app ID to the cloud server.'
+            : 'Add the Android Firebase app ID to the cloud server.',
+      );
     }
     if (Firebase.apps.isNotEmpty &&
         Firebase.app().options.projectId != config['projectId']) {
@@ -506,9 +514,7 @@ class CloudConnection {
 
   Future<void> startHome() async {
     if (!Platform.isAndroid) {
-      throw StateError(
-        'Use an Android phone at home. An iPhone can listen with the web app.',
-      );
+      throw StateError('Use an Android phone at home. An iPhone can listen.');
     }
     final epoch = ++_epoch;
     _liveAudio = true;
@@ -873,13 +879,22 @@ class CloudConnection {
 
   Future<void> enableAlerts() async {
     await ensureReady();
-    if (!Platform.isAndroid) {
-      throw StateError('For free iPhone alerts, use the Home Screen web app.');
-    }
     if (roomId == null) throw StateError('Pair the home phone first.');
     final permission = await FirebaseMessaging.instance.requestPermission();
     if (permission.authorizationStatus == AuthorizationStatus.denied) {
       throw StateError('Allow notifications in phone settings.');
+    }
+    if (Platform.isIOS) {
+      // Firebase can only mint an iPhone token once Apple has issued its own.
+      for (var i = 0; i < 10; i++) {
+        if (await FirebaseMessaging.instance.getAPNSToken() != null) break;
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+      }
+      if (await FirebaseMessaging.instance.getAPNSToken() == null) {
+        throw StateError(
+          'Apple notifications are not ready yet. Check that notifications are allowed, then try again.',
+        );
+      }
     }
     final token = await FirebaseMessaging.instance.getToken();
     if (token == null) {

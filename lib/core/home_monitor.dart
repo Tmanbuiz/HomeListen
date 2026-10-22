@@ -384,7 +384,8 @@ class HomeMonitor extends ChangeNotifier {
   bool get isTalking => _role == MonitorRole.talking;
   bool get isGuardian => _role == MonitorRole.guardian;
   bool get isMonitoring => isTalking || isGuardian;
-  bool get guardianOnly => _guardianOnly;
+  bool get liveHomeAvailable => !(Platform.isIOS && cloudMode);
+  bool get guardianOnly => _guardianOnly || !liveHomeAvailable;
   GuardianSettings get guardianSettings => _guardianSettings;
   int get queuedAlertCount => _outbox.length;
   bool get cloudAlertsReady =>
@@ -1020,7 +1021,7 @@ class HomeMonitor extends ChangeNotifier {
   }
 
   Future<void> startTalking() async {
-    if (_guardianOnly && _deviceRole == DeviceRole.home) {
+    if (guardianOnly && _deviceRole == DeviceRole.home) {
       await startGuardian();
       return;
     }
@@ -1122,7 +1123,7 @@ class HomeMonitor extends ChangeNotifier {
   Future<void> _startCloudHome() async {
     if (isActive || _busy || _disposed) return;
     if (!Platform.isAndroid) {
-      _error = 'Use Android as the home phone. iPhone can listen through the web app.';
+      _error = 'Live home sharing needs Android. On an iPhone, use Guardian.';
       _notify();
       return;
     }
@@ -1180,8 +1181,8 @@ class HomeMonitor extends ChangeNotifier {
     if (isActive || _busy || _disposed || _deviceRole != DeviceRole.home) {
       return;
     }
-    if (!Platform.isAndroid) {
-      _error = 'Guardian monitoring uses the Android home phone.';
+    if (!(Platform.isAndroid || Platform.isIOS)) {
+      _error = 'Guardian monitoring needs an Android phone or an iPhone.';
       _notify();
       return;
     }
@@ -1200,14 +1201,7 @@ class HomeMonitor extends ChangeNotifier {
         );
       }
       if (epoch != _epoch || _disposed) return;
-      final shown = await _channel.invokeMethod<bool>('start', {
-        'text': 'Guardian on — local sound detection • live listening off',
-      });
-      if (shown != true) {
-        throw StateError(
-          'Allow visible Home Listen notifications before starting Guardian.',
-        );
-      }
+      await _showGuardianNotice();
       if (epoch != _epoch || _disposed) return;
       final pcm = await _recorder.startStream(
         const RecordConfig(
@@ -1253,6 +1247,21 @@ class HomeMonitor extends ChangeNotifier {
     } finally {
       _busy = false;
       _notify();
+    }
+  }
+
+  /// Android shows a persistent microphone notification with a Stop action.
+  /// An iPhone has none: iOS shows its own recording indicator while the
+  /// microphone is open, and Stop stays on the Home screen.
+  Future<void> _showGuardianNotice() async {
+    if (!Platform.isAndroid) return;
+    final shown = await _channel.invokeMethod<bool>('start', {
+      'text': 'Guardian on — local sound detection • live listening off',
+    });
+    if (shown != true) {
+      throw StateError(
+        'Allow visible Home Listen notifications before starting Guardian.',
+      );
     }
   }
 

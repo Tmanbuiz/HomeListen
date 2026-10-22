@@ -1,6 +1,6 @@
 # Home Listen
 
-Guardian sound alerts and optional live sound from the Android phone you leave at home. Listen on another Android phone or the iPhone Home Screen web app. Built by WianTribe.
+Guardian sound alerts and optional live sound from the Android phone you leave at home. Listen on another Android phone, the Home Listen iPhone app, or the iPhone Home Screen web app. Built by WianTribe.
 
 This new repository builds on the owner's [PhoneListen](https://github.com/Tmanbuiz/PhoneListen) app, retaining its Tailscale mode and local YAMNet sound detector.
 
@@ -101,7 +101,16 @@ Private documents hold hashed invitations and push destinations. Clients cannot 
 
 Automated checks do not replace testing on your phones. Check Android capture with the screen closed, alerts with no live listeners, iPhone push with its app closed, mobile handover, revocation and Stop.
 
-iOS can suspend browser WebRTC/background audio. Keep the iPhone app open for live listening; use push for unattended alerts. Hardware volume buttons may replace the page slider. Native iOS cloud mode is not included; native iOS retains Tailscale.
+iOS can suspend browser WebRTC/background audio. Keep the iPhone app open for live listening; use push for unattended alerts. Hardware volume buttons may replace the page slider. The native iPhone app listens in cloud mode on the same server and API as Android (alerts through Apple push, live listening, QR or link pairing). An iPhone can also be the home phone in Guardian mode (sound alerts only, no live audio). Live + Guardian from the home phone still needs Android. On an iPhone home phone iOS shows its own orange recording indicator while the microphone is open, and Stop is on the Home screen; iOS has no persistent notification with a Stop action. Keep the app open or in the background with the phone charging, and test with the screen locked before relying on it. Tailscale mode is still available.
+
+### iPhone app setup (one time)
+
+1. Firebase console → Project settings → Add app → iOS, bundle ID `com.wiantribe.homeListen`. Copy its App ID (looks like `1:…:ios:…`).
+2. Firebase console → Project settings → Cloud Messaging → Apple app configuration → upload an APNs Auth Key (.p8) from Apple Developer → Certificates, Identifiers & Profiles → Keys (enable Apple Push Notifications service). Enter the Key ID and Team ID.
+3. In `backend/wrangler.jsonc` set `FIREBASE_IOS_APP_ID` to that App ID, then deploy the Worker. The App ID is public; the .p8 key stays in Firebase and is never committed.
+4. In Apple Developer → Identifiers → `com.wiantribe.homeListen`, enable Push Notifications. Build with the `ios-testflight` Codemagic workflow.
+
+The app asks for notification permission when you press Enable alerts. The push entitlement means the free-Apple-ID sideload workflow (`ios-unsigned`) no longer installs; use TestFlight.
 
 Battery restrictions, force-stop, internet loss or denied notifications can interrupt monitoring. Force-stop does not restart capture. Sound detection can miss or mistake sounds; this is not an emergency alarm.
 
