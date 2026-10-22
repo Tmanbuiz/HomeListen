@@ -66,12 +66,13 @@ workflows:
     max_build_duration: 60
     instance_type: mac_mini_m2
     # Needs, in Codemagic (never in this repo):
-    #  1. Teams > Integrations > App Store Connect: add an API key named
-    #     "homelisten-asc" (Users and Access > Integrations in App Store Connect).
+    #  1. Teams > Integrations > App Store Connect: an API key named
+    #     "codemagic" (shared with other apps; generate one under Users and
+    #     Access > Integrations in App Store Connect if it does not exist).
     #  2. The app record com.wiantribe.homeListen created in App Store Connect.
     # Codemagic then creates the distribution certificate and App Store profile.
     integrations:
-      app_store_connect: homelisten-asc
+      app_store_connect: codemagic
     environment:
       <<: *env_versions
       ios_signing:

@@ -13,7 +13,7 @@ Sound detection is not an emergency alarm. Keep that wording in every listing.
 | Privacy policy page | Written: `viewer/public/privacy.html`, served at `https://homelisten.oralyvo.app/privacy` after the Worker is deployed. Have it reviewed before you rely on it; Claude is not a lawyer. |
 | Support page | Written: `https://homelisten.oralyvo.app/support`, with `support@oralyvo.com` and `support@wiantribe.com`. Make sure both mailboxes exist and you read them, then deploy the Worker. The store consoles each take one support address; use `support@wiantribe.com` or `support@oralyvo.com`, whichever is the publisher's. |
 | iPhone cloud mode | **Built and merged.** The iPhone listens in cloud mode and can be a Guardian-only home phone. Live sharing from an iPhone home phone is not built. Still needed before it works: add the iOS app in Firebase, upload the APNs key, set `FIREBASE_IOS_APP_ID` and deploy (README, iPhone app setup). The main App Store review risk is now a reviewer who cannot try it without a second phone (Guideline 2.1). |
-| iOS signing | `ios-testflight` workflow added to `codemagic.yaml`. It needs the App Store Connect API key added in Codemagic as `homelisten-asc` and the app record created first (steps below). The older `ios-unsigned` workflow cannot go to TestFlight. |
+| iOS signing | `ios-testflight` workflow added to `codemagic.yaml`. It needs the App Store Connect API key added in Codemagic as `codemagic` and the app record created first (steps below). The older `ios-unsigned` workflow cannot go to TestFlight. |
 | Android signing | Needs your permanent key (`docs/ANDROID_RELEASE.md`). Play also needs an `.aab`, which the signed workflow already makes. |
 | Screenshots | Not in the repo. Needs real screenshots from your phones. |
 | Android foreground service | Play requires a declaration and a short demo video for `FOREGROUND_SERVICE_MICROPHONE` (see below). |
@@ -148,7 +148,8 @@ Console: https://appstoreconnect.apple.com → **Apps → + → New App**.
 3. In App Store Connect: Users and Access → Integrations → App Store Connect
    API → generate a key (role App Manager) and download it once.
 4. In Codemagic: Teams → Integrations → App Store Connect → add that key and
-   name it exactly `homelisten-asc`. Then run the **iOS signed build to
+   name it exactly `codemagic` (the workflow uses that name; one key can serve
+   every app on the team). Then run the **iOS signed build to
    TestFlight** workflow. Codemagic creates the certificate and profile, builds
    a signed `.ipa` and uploads it. After Apple finishes processing (about 15
    minutes), add yourself under TestFlight → Internal Testing.
