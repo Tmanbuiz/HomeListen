@@ -1,0 +1,295 @@
+{
+  "description": "Selected upstream skills vendored without modifications. Update deliberately from reviewed immutable revisions; preserve supporting files and licenses.",
+  "sources": [
+    {
+      "repository": "https://github.com/flutter/agent-plugins",
+      "revision": "f813a46b18456a20f37eb5784c091b7d945c3b4b",
+      "skills": [
+        "flutter-add-integration-test",
+        "flutter-add-widget-test",
+        "flutter-apply-architecture-best-practices",
+        "flutter-fix-layout-issues"
+      ],
+      "license": ".agents/licenses/flutter-LICENSE"
+    },
+    {
+      "repository": "https://github.com/dart-lang/skills",
+      "revision": "bf984f3ef223dd85e92036f934bbcb6bf301e4ce",
+      "skills": [
+        "dart-add-unit-test",
+        "dart-run-static-analysis",
+        "dart-fix-runtime-errors",
+        "dart-resolve-package-conflicts"
+      ],
+      "license": ".agents/licenses/dart-lang-LICENSE"
+    },
+    {
+      "repository": "https://github.com/firebase/agent-skills",
+      "revision": "92eed24c0976a79a66d5b8038e9eda8b441ef92d",
+      "skills": [
+        "firebase-auth-basics",
+        "firebase-firestore",
+        "firebase-security-rules-auditor",
+        "firestore-rules-creation"
+      ],
+      "license": ".agents/licenses/firebase-LICENSE"
+    },
+    {
+      "repository": "https://github.com/cloudflare/skills",
+      "revision": "86505e44f87d801aa1864a3c4109e9a8ae5c409f",
+      "skills": [
+        "workers-best-practices",
+        "wrangler"
+      ],
+      "license": ".agents/licenses/cloudflare-LICENSE"
+    }
+  ],
+  "files": [
+    {
+      "repository": "flutter/agent-plugins",
+      "sourcePath": "LICENSE",
+      "blobSha": "fb3be41704868aebd3210d23426580cd3aaf33b3",
+      "destination": ".agents/licenses/flutter-LICENSE"
+    },
+    {
+      "repository": "flutter/agent-plugins",
+      "sourcePath": "skills/flutter-add-integration-test/SKILL.md",
+      "blobSha": "60902f1aa3156fa0c8e28df5448864dd5cc6c014",
+      "destination": ".agents/skills/flutter-add-integration-test/SKILL.md"
+    },
+    {
+      "repository": "flutter/agent-plugins",
+      "sourcePath": "skills/flutter-add-widget-test/SKILL.md",
+      "blobSha": "01ac7ac645a7f6f66603cb1c78a2a28dba3a5d32",
+      "destination": ".agents/skills/flutter-add-widget-test/SKILL.md"
+    },
+    {
+      "repository": "flutter/agent-plugins",
+      "sourcePath": "skills/flutter-apply-architecture-best-practices/SKILL.md",
+      "blobSha": "791994b12280e5734479079bd6255fa705e983c5",
+      "destination": ".agents/skills/flutter-apply-architecture-best-practices/SKILL.md"
+    },
+    {
+      "repository": "flutter/agent-plugins",
+      "sourcePath": "skills/flutter-fix-layout-issues/SKILL.md",
+      "blobSha": "3804a3c1d9fd2b88ee1ddc74716799cf2cd770c1",
+      "destination": ".agents/skills/flutter-fix-layout-issues/SKILL.md"
+    },
+    {
+      "repository": "dart-lang/skills",
+      "sourcePath": "LICENSE",
+      "blobSha": "dd5b36bbf37f60f6b02f0342e31e076a81dd01b6",
+      "destination": ".agents/licenses/dart-lang-LICENSE"
+    },
+    {
+      "repository": "dart-lang/skills",
+      "sourcePath": "skills/dart-add-unit-test/SKILL.md",
+      "blobSha": "a4921a529000ddbfa6c98360dbc0b68f11fc4d4a",
+      "destination": ".agents/skills/dart-add-unit-test/SKILL.md"
+    },
+    {
+      "repository": "dart-lang/skills",
+      "sourcePath": "skills/dart-fix-runtime-errors/SKILL.md",
+      "blobSha": "1a7db85158aaeced4d6f702d73acfd6f37d712a1",
+      "destination": ".agents/skills/dart-fix-runtime-errors/SKILL.md"
+    },
+    {
+      "repository": "dart-lang/skills",
+      "sourcePath": "skills/dart-resolve-package-conflicts/SKILL.md",
+      "blobSha": "9a7ffdc5a79c14ad2e3d8dab6e257a28cfa40e3d",
+      "destination": ".agents/skills/dart-resolve-package-conflicts/SKILL.md"
+    },
+    {
+      "repository": "dart-lang/skills",
+      "sourcePath": "skills/dart-run-static-analysis/SKILL.md",
+      "blobSha": "27ca6546684accbc8f96091d0b992f6f43a16d15",
+      "destination": ".agents/skills/dart-run-static-analysis/SKILL.md"
+    },
+    {
+      "repository": "firebase/agent-skills",
+      "sourcePath": "LICENSE",
+      "blobSha": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+      "destination": ".agents/licenses/firebase-LICENSE"
+    },
+    {
+      "repository": "firebase/agent-skills",
+      "sourcePath": "agents/firestore-rules-author.md",
+      "blobSha": "eb8bc93825227fb1c92bd0cc2e9a008115583ec0",
+      "destination": ".agents/upstream/firebase/agents/firestore-rules-author.md"
+    },
+    {
+      "repository": "firebase/agent-skills",
+      "sourcePath": "skills/firebase-auth-basics/SKILL.md",
+      "blobSha": "d66d9f8c53d34c86042581c8bb1a5a3c5a67c780",
+      "destination": ".agents/skills/firebase-auth-basics/SKILL.md"
+    },
+    {
+      "repository": "firebase/agent-skills",
+      "sourcePath": "skills/firebase-auth-basics/references/client_sdk_android.md",
+      "blobSha": "1dda11cd52fbae5404fd09b1ab64ece39ba532ce",
+      "destination": ".agents/skills/firebase-auth-basics/references/client_sdk_android.md"
+    },
+    {
+      "repository": "firebase/agent-skills",
+      "sourcePath": "skills/firebase-auth-basics/references/client_sdk_web.md",
+      "blobSha": "f511f9e1d57d72847b3874d25908fb150f5eb248",
+      "destination": ".agents/skills/firebase-auth-basics/references/client_sdk_web.md"
+    },
+    {
+      "repository": "firebase/agent-skills",
+      "sourcePath": "skills/firebase-auth-basics/references/flutter_setup.md",
+      "blobSha": "82300865879991858b2310a29f90d90c36275ed4",
+      "destination": ".agents/skills/firebase-auth-basics/references/flutter_setup.md"
+    },
+    {
+      "repository": "firebase/agent-skills",
+      "sourcePath": "skills/firebase-auth-basics/references/ios_setup.md",
+      "blobSha": "5a0d26713b88a66125dfb4542ba8ecfd0603e0d3",
+      "destination": ".agents/skills/firebase-auth-basics/references/ios_setup.md"
+    },
+    {
+      "repository": "firebase/agent-skills",
+      "sourcePath": "skills/firebase-auth-basics/references/security_rules.md",
+      "blobSha": "5a229d7e773d8c28ff11064352c19b210322d2d6",
+      "destination": ".agents/skills/firebase-auth-basics/references/security_rules.md"
+    },
+    {
+      "repository": "firebase/agent-skills",
+      "sourcePath": "skills/firebase-firestore/SKILL.md",
+      "blobSha": "d6c809a7be7f0f542ae13521a24520503a7d41ec",
+      "destination": ".agents/skills/firebase-firestore/SKILL.md"
+    },
+    {
+      "repository": "firebase/agent-skills",
+      "sourcePath": "skills/firebase-firestore/references/enterprise/android_sdk_usage.md",
+      "blobSha": "53bb3c4bcf1745ee25dc11a58e0bb76bffa1e682",
+      "destination": ".agents/skills/firebase-firestore/references/enterprise/android_sdk_usage.md"
+    },
+    {
+      "repository": "firebase/agent-skills",
+      "sourcePath": "skills/firebase-firestore/references/enterprise/data_model.md",
+      "blobSha": "3e7f853e3c97ccd13a02517f4965daea49b41891",
+      "destination": ".agents/skills/firebase-firestore/references/enterprise/data_model.md"
+    },
+    {
+      "repository": "firebase/agent-skills",
+      "sourcePath": "skills/firebase-firestore/references/enterprise/flutter_setup.md",
+      "blobSha": "b97a33371d80cdc728279b22dcb9dc548507a1e9",
+      "destination": ".agents/skills/firebase-firestore/references/enterprise/flutter_setup.md"
+    },
+    {
+      "repository": "firebase/agent-skills",
+      "sourcePath": "skills/firebase-firestore/references/enterprise/indexes.md",
+      "blobSha": "ebba94e021ac01a94399d2ee1846f29122492365",
+      "destination": ".agents/skills/firebase-firestore/references/enterprise/indexes.md"
+    },
+    {
+      "repository": "firebase/agent-skills",
+      "sourcePath": "skills/firebase-firestore/references/enterprise/ios_setup.md",
+      "blobSha": "bb4a810b66f428096070b8cb45be47b836746da5",
+      "destination": ".agents/skills/firebase-firestore/references/enterprise/ios_setup.md"
+    },
+    {
+      "repository": "firebase/agent-skills",
+      "sourcePath": "skills/firebase-firestore/references/enterprise/provisioning.md",
+      "blobSha": "0ab3c4ef8a75001c402ecf46b6531f823796a5ef",
+      "destination": ".agents/skills/firebase-firestore/references/enterprise/provisioning.md"
+    },
+    {
+      "repository": "firebase/agent-skills",
+      "sourcePath": "skills/firebase-firestore/references/enterprise/python_sdk_usage.md",
+      "blobSha": "ee731126c91d833bec1fb42ea922f77981c5efdd",
+      "destination": ".agents/skills/firebase-firestore/references/enterprise/python_sdk_usage.md"
+    },
+    {
+      "repository": "firebase/agent-skills",
+      "sourcePath": "skills/firebase-firestore/references/enterprise/web_sdk_usage.md",
+      "blobSha": "34ed1f9e572533bd986766458eeb82013b4d4a1f",
+      "destination": ".agents/skills/firebase-firestore/references/enterprise/web_sdk_usage.md"
+    },
+    {
+      "repository": "firebase/agent-skills",
+      "sourcePath": "skills/firebase-firestore/references/standard/android_sdk_usage.md",
+      "blobSha": "6152a88a648a99de64aaf1bb034d1190e214d560",
+      "destination": ".agents/skills/firebase-firestore/references/standard/android_sdk_usage.md"
+    },
+    {
+      "repository": "firebase/agent-skills",
+      "sourcePath": "skills/firebase-firestore/references/standard/flutter_setup.md",
+      "blobSha": "8c966f37183860f3046b61e94dbbd60772daf2b2",
+      "destination": ".agents/skills/firebase-firestore/references/standard/flutter_setup.md"
+    },
+    {
+      "repository": "firebase/agent-skills",
+      "sourcePath": "skills/firebase-firestore/references/standard/indexes.md",
+      "blobSha": "66278d2c847d3ed149d83ff361f525f3b8b58694",
+      "destination": ".agents/skills/firebase-firestore/references/standard/indexes.md"
+    },
+    {
+      "repository": "firebase/agent-skills",
+      "sourcePath": "skills/firebase-firestore/references/standard/ios_setup.md",
+      "blobSha": "6ed9509fcc2cecc8d312b9b6ab09d4813e2d716c",
+      "destination": ".agents/skills/firebase-firestore/references/standard/ios_setup.md"
+    },
+    {
+      "repository": "firebase/agent-skills",
+      "sourcePath": "skills/firebase-firestore/references/standard/provisioning.md",
+      "blobSha": "5179f45a5de84998bea1993627cc6eded2bd91e7",
+      "destination": ".agents/skills/firebase-firestore/references/standard/provisioning.md"
+    },
+    {
+      "repository": "firebase/agent-skills",
+      "sourcePath": "skills/firebase-firestore/references/standard/web_sdk_usage.md",
+      "blobSha": "7b9007daa104d671e999d645422f06bc3acf82d8",
+      "destination": ".agents/skills/firebase-firestore/references/standard/web_sdk_usage.md"
+    },
+    {
+      "repository": "firebase/agent-skills",
+      "sourcePath": "skills/firebase-security-rules-auditor/SKILL.md",
+      "blobSha": "18d1abac06cd7f2a6546fc05d6590e43e770a1ad",
+      "destination": ".agents/skills/firebase-security-rules-auditor/SKILL.md"
+    },
+    {
+      "repository": "firebase/agent-skills",
+      "sourcePath": "skills/firestore-rules-creation/SKILL.md",
+      "blobSha": "a6632bcd36182517c6134608181ace2587aae457",
+      "destination": ".agents/skills/firestore-rules-creation/SKILL.md"
+    },
+    {
+      "repository": "cloudflare/skills",
+      "sourcePath": "LICENSE",
+      "blobSha": "7a4a3ea2424c09fbe48d455aed1eaa94d9124835",
+      "destination": ".agents/licenses/cloudflare-LICENSE"
+    },
+    {
+      "repository": "cloudflare/skills",
+      "sourcePath": "skills/workers-best-practices/SKILL.md",
+      "blobSha": "a669596e421f1945bd6a37d5f4dc012752428919",
+      "destination": ".agents/skills/workers-best-practices/SKILL.md"
+    },
+    {
+      "repository": "cloudflare/skills",
+      "sourcePath": "skills/workers-best-practices/references/configuration.md",
+      "blobSha": "96590b1d1fcad31a9c62d33174ed68ca3adf1c07",
+      "destination": ".agents/skills/workers-best-practices/references/configuration.md"
+    },
+    {
+      "repository": "cloudflare/skills",
+      "sourcePath": "skills/workers-best-practices/references/platform-apis.md",
+      "blobSha": "68af36add31e223ea9ac41d8895de7370e80201e",
+      "destination": ".agents/skills/workers-best-practices/references/platform-apis.md"
+    },
+    {
+      "repository": "cloudflare/skills",
+      "sourcePath": "skills/workers-best-practices/references/runtime-patterns.md",
+      "blobSha": "bdb8c03882b6ecd658d91b3cd44a1b5203ddd3fc",
+      "destination": ".agents/skills/workers-best-practices/references/runtime-patterns.md"
+    },
+    {
+      "repository": "cloudflare/skills",
+      "sourcePath": "skills/wrangler/SKILL.md",
+      "blobSha": "1d2f6ed1c3f55279d1aa9202501d03a6f1af9f6b",
+      "destination": ".agents/skills/wrangler/SKILL.md"
+    }
+  ]
+}
