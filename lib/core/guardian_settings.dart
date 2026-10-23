@@ -10,7 +10,6 @@ const guardianCategories = [
 
 int defaultSoundDuration(String category) => switch (category) {
   'crying' => 30,
-  'coughing' => 8,
   _ => 0,
 };
 
