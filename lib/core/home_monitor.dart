@@ -128,6 +128,7 @@ class HomeMonitor extends ChangeNotifier {
       },
     );
     soundWatch.onVerdict = (verdict, at) {
+      if (!_acceptsSound) return;
       if (_deviceRole == DeviceRole.home) {
         _cloud?.publishRecordingVerdict(
           verdict.category,
@@ -139,6 +140,7 @@ class HomeMonitor extends ChangeNotifier {
       }
     };
     soundWatch.onDetection = (detection) {
+      if (!_acceptsSound) return;
       final title = detection.title;
       // The home phone already told this phone: do not say it twice.
       final told = _remoteAlertAt[title];
@@ -243,6 +245,7 @@ class HomeMonitor extends ChangeNotifier {
       );
   bool get recordingArmed => _deviceRole == DeviceRole.away && _recordingOptIn;
   bool get _canRecord => recordingArmed && isListening;
+  bool get _acceptsSound => !_disposed && (isMonitoring || isListening);
 
   Future<void> loadRecordings() async {
     if (_deviceRole != DeviceRole.away) return;
@@ -2072,10 +2075,12 @@ class HomeMonitor extends ChangeNotifier {
   void processPcmForTest(Int16List pcm) => _processPcm(pcm);
 
   void _processPcm(Int16List pcm) {
-    if (_disposed) return;
-    _lastCaptureAt = DateTime.now();
-    if (_deviceRole == DeviceRole.away && !cloudMode) _feedRecording(pcm);
-    soundWatch.feed(pcm);
+    if (_disposed || pcm.isEmpty) return;
+    if (_acceptsSound) {
+      _lastCaptureAt = DateTime.now();
+      if (_deviceRole == DeviceRole.away && !cloudMode) _feedRecording(pcm);
+      soundWatch.feed(pcm);
+    }
     var sum = 0.0;
     for (final v in pcm) {
       sum += (v / 32768.0) * (v / 32768.0);
@@ -2270,6 +2275,8 @@ class HomeMonitor extends ChangeNotifier {
     _suppressAuto = true;
     _wantListening = false;
     _epoch++;
+    // Invalidate in-flight inference before asynchronous capture/peer teardown.
+    soundWatch.reset();
     _recordingWatchdog?.cancel();
     _recordingWatchdog = null;
     _lastRecordingPcm = null;

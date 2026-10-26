@@ -11,10 +11,10 @@ import 'guardian_settings.dart';
 /// A duration gate with per-category cooldowns. Scores are model outputs, not
 /// calibrated probabilities; alerts deliberately say "Possible".
 ///
-/// Sustained sounds (crying) need [requiredHits] windows in a row, so a single
-/// odd moment does not wake anyone. Short sounds ([immediate]: a bark, a knock,
-/// a bang) last a fraction of a second and are, by nature, in one analysis
-/// window only; requiring two in a row meant they could never alert.
+/// Sustained sounds (crying) need [requiredHits] matching windows and their
+/// configured duration. Each category keeps its own evidence across gaps
+/// shorter than [toleratedGap], including brief competing classifications.
+/// Short sounds in [immediate] do not need consecutive matching windows.
 class SoundGate {
   SoundGate({
     this.requiredHits = 2,
@@ -26,56 +26,57 @@ class SoundGate {
   final int requiredHits;
   final Duration cooldown;
   final Duration toleratedGap;
-  DateTime? _lastHitAt;
   final Set<String> immediate;
 
   /// Categories that need this many separate detections close together, such as
   /// two distinct barks, before alerting. One mislabeled sound or a single bark
   /// does not fire. Two windows only 0.5 s apart can contain the same sound
-  /// (they overlap by half), so hits must be [burstGap] apart to count as
-  /// separate.
+  /// (they overlap by half), so hits must be [burstGap] apart and have a
+  /// nonmatching classification between them to count as separate.
   final Map<String, int> burst;
   static const burstGap = Duration(milliseconds: 700);
   static const burstSpan = Duration(seconds: 8);
   final Map<String, List<DateTime>> _recent = {};
   final Map<String, DateTime> _last = {};
+  final Map<String, _SoundCandidate> _candidates = {};
   Map<String, SoundRule> rules = {};
-  DateTime? _candidateAt;
-  String? _candidate;
-  int _hits = 0;
+  String? _previousCategory;
   int acceptedSpanMs = 0;
 
   bool accept(String? category, DateTime at) {
-    if (category == null) {
-      final last = _lastHitAt;
-      if (toleratedGap > Duration.zero &&
-          last != null &&
-          at.difference(last) < toleratedGap) {
-        return false;
-      }
-      reset();
-      return false;
+    final previous = _previousCategory;
+    _previousCategory = category;
+    if (toleratedGap > Duration.zero) {
+      _candidates.removeWhere(
+        (_, candidate) => at.difference(candidate.lastHitAt) >= toleratedGap,
+      );
+    } else {
+      _candidates.removeWhere((name, _) => name != category);
     }
-    if (toleratedGap > Duration.zero &&
-        _lastHitAt != null &&
-        at.difference(_lastHitAt!) >= toleratedGap) {
-      reset();
-    }
-    _lastHitAt = at;
-    if (burst.containsKey(category)) {
+    if (category == null) return false;
+    // Once a distinct pair establishes a candidate, keep its evidence while
+    // that sound continues. A configured duration can exceed the burst span.
+    if (burst.containsKey(category) && !_candidates.containsKey(category)) {
       final hits = _recent.putIfAbsent(category, () => []);
       hits.removeWhere((t) => at.difference(t) > burstSpan);
-      if (hits.isEmpty || at.difference(hits.last) >= burstGap) hits.add(at);
+      if (previous != category &&
+          (hits.isEmpty || at.difference(hits.last) >= burstGap)) {
+        hits.add(at);
+      }
       if (hits.length < burst[category]!) return false;
     }
-    if (category != _candidate) _candidateAt = at;
-    _hits = category == _candidate ? _hits + 1 : 1;
-    _candidate = category;
+    final candidate = _candidates.putIfAbsent(
+      category,
+      () => _SoundCandidate(at),
+    );
+    candidate.lastHitAt = at;
+    candidate.hits++;
     final needed = immediate.contains(category) ? 1 : requiredHits;
-    if (_hits < needed) return false;
+    if (candidate.hits < needed) return false;
     final rule = rules[category];
     if (rule != null &&
-        at.difference(_candidateAt!) < Duration(seconds: rule.minimumSeconds)) {
+        at.difference(candidate.startedAt) <
+            Duration(seconds: rule.minimumSeconds)) {
       return false;
     }
     final last = _last[category];
@@ -88,19 +89,28 @@ class SoundGate {
     }
     _last[category] = at;
     _recent[category]?.clear();
-    acceptedSpanMs = at.difference(_candidateAt!).inMilliseconds;
-    _hits = 0;
-    _candidateAt = at;
+    acceptedSpanMs = at.difference(candidate.startedAt).inMilliseconds;
+    if (burst.containsKey(category)) {
+      _candidates.remove(category);
+    } else {
+      candidate.hits = 0;
+      candidate.startedAt = at;
+    }
     return true;
   }
 
   void reset({bool clearBursts = false}) {
-    _candidate = null;
-    _candidateAt = null;
-    _lastHitAt = null;
-    _hits = 0;
+    _candidates.clear();
+    _previousCategory = null;
+    acceptedSpanMs = 0;
     if (clearBursts) _recent.clear();
   }
+}
+
+class _SoundCandidate {
+  _SoundCandidate(this.startedAt) : lastHitAt = startedAt;
+  DateTime startedAt, lastHitAt;
+  int hits = 0;
 }
 
 /// Which YAMNet classes count toward each alert category.
@@ -412,7 +422,7 @@ class SoundWatch {
         onEvent?.call(detection.title);
       }
     } catch (e) {
-      if (_disposed) return;
+      if (_disposed || !enabled || generation != _generation) return;
       lastError = '$e';
       debugPrint('sound watch: analysis failed: $e');
       enabled = false;

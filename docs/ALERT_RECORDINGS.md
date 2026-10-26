@@ -1,8 +1,10 @@
 # Optional alert recordings
 
-On the receiving Android phone, iPhone/iPad app, or web listener, select the sounds you want to record. Recording is off unless its checkbox is selected. Crying defaults to 30 seconds and coughing to 8 seconds. Duration rules can extend to five minutes. Keep live listening connected before the episode starts.
+On the receiving Android phone, iPhone/iPad app, or web listener, select the sounds you want to record. Recording is off unless its checkbox is selected. Crying defaults to 30 seconds. Per-sound recording durations can extend to five minutes. Keep live listening connected before the episode starts.
 
 The home phone's alert rules determine remote push timing. A receiver's recording duration determines which local clips it keeps; changing it does not remotely reconfigure the home phone. Set the crying rule to 30 seconds on the home phone for 30-second push alerts.
+
+The home detector preserves the crying-alert timer through brief competing classifications, such as a knock, when matching crying detections resume within two seconds. Two seconds without matching crying starts a new timer. Coughing and dog-sound push alerts need two distinct detection runs within eight seconds; one continuous run of overlapping classifications does not count as two sounds. These push rules are separate from the receiver's recording-duration setting.
 
 The receiver buffers the first analysis window and the detected episode while waiting for the selected duration. Short candidates are discarded. Qualifying episodes continue recording until roughly two seconds without a matching detection. Duration is an estimate from captured samples and classification windows, not a medical measurement. Brief pauses can belong to the same episode. The classifier currently selects one category per window, so overlapping sound types may split episodes.
 
@@ -20,7 +22,7 @@ Keep the receiving app/page active. Browsers and iOS may suspend background work
 
 - With recording unchecked, verify that no temporary PCM or WAV clip is created.
 - Start receiving before a known cry sample; verify no clip is kept below 30 seconds and the full detected episode is saved above the threshold.
-- Confirm coughing uses an eight-second episode rule and brief pauses behave consistently.
+- Confirm each selected recording duration is honored and brief pauses behave consistently. Separately, verify that two distinct coughs trigger a home alert and one sustained detection does not.
 - Check filenames, correct WAV duration, native export and browser playback/download/delete.
 - Disconnect/reconnect, Stop, switch to alerts-only, revoke access and expire a guest while recording; no clip may join separate sessions.
 - Test Android, iPhone, iPad and Safari/Chrome web listeners with physical audio and background/locked-screen transitions.
