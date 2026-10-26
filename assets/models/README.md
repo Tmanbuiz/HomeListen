@@ -15,6 +15,12 @@ build. If Google's `latest` artifact changes, the script rejects it until the
 model has been reviewed and the pinned hash deliberately updated.
 
 No runtime network download or cloud inference is used. Do not interpret the
-classifier's scores as calibrated probabilities. Home Listen uses two consecutive
-matching classifications and a per-category cooldown to limit repeated alerts;
-real sound accuracy must be evaluated on the intended phones and in their rooms.
+classifier's scores as calibrated probabilities. Crying uses a duration rule
+(30 seconds by default), preserving its timer through competing classifications
+or pauses shorter than two seconds. A gap of two seconds without a matching
+classification starts a fresh timer. Coughing and dog sounds require two
+distinct detection runs within eight seconds, with a nonmatching classification
+between them and at least 700 ms between their first detections. Repeated
+overlapping windows from one continuous sound do not count as separate sounds.
+Per-category cooldowns limit repeated alerts. Real sound accuracy must be
+evaluated on the intended phones and in their rooms.

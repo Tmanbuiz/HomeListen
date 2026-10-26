@@ -81,6 +81,7 @@ void main() {
       expect(g.accept('barking', t0), isFalse);
       g.reset(clearBursts: true);
       expect(g.accept('barking', t0.add(const Duration(seconds: 2))), isFalse);
+      expect(g.accept(null, t0.add(const Duration(seconds: 3))), isFalse);
       expect(g.accept('barking', t0.add(const Duration(seconds: 4))), isTrue);
     });
 
@@ -89,11 +90,14 @@ void main() {
       () {
         final g = gate();
         g.accept('barking', t0);
+        g.accept(null, t0.add(const Duration(seconds: 1)));
         expect(g.accept('barking', t0.add(const Duration(seconds: 2))), isTrue);
+        g.accept(null, t0.add(const Duration(seconds: 3)));
         expect(
           g.accept('barking', t0.add(const Duration(seconds: 4))),
           isFalse,
         );
+        g.accept(null, t0.add(const Duration(seconds: 5)));
         expect(
           g.accept('barking', t0.add(const Duration(seconds: 6))),
           isFalse,
