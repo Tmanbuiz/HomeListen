@@ -88,35 +88,40 @@ void main() {
     },
   );
 
-  testWidgets('response body stall times out and the next request can finish', (
-    tester,
-  ) async {
-    final body = StreamController<List<int>>();
-    var calls = 0;
-    final client = MockClient.streaming((request, stream) async {
-      await stream.drain<void>();
-      if (calls++ == 0) return http.StreamedResponse(body.stream, 200);
-      return http.StreamedResponse(Stream.value([123, 125]), 200);
-    });
-    final pending = sendCloudRequest(
-      client,
-      'POST',
-      Uri.parse('https://home.example/api/state'),
-      headers: {},
-    );
-    final expectation = expectLater(pending, throwsA(isA<TimeoutException>()));
-    await tester.pump();
-    await tester.pump(const Duration(seconds: 15));
-    await expectation;
-    final next = sendCloudRequest(
-      client,
-      'POST',
-      Uri.parse('https://home.example/api/state'),
-      headers: {},
-    );
-    await tester.pump();
-    expect((await next).body, '{}');
-    await body.close();
-    client.close();
-  });
+  test(
+    'response body stall times out and the next request can finish',
+    () async {
+      var listening = false;
+      final body = StreamController<List<int>>(
+        onListen: () => listening = true,
+      );
+      var calls = 0;
+      final client = MockClient.streaming((request, stream) async {
+        await stream.drain<void>();
+        if (calls++ == 0) return http.StreamedResponse(body.stream, 200);
+        return http.StreamedResponse(Stream.value([123, 125]), 200);
+      });
+      await expectLater(
+        sendCloudRequest(
+          client,
+          'POST',
+          Uri.parse('https://home.example/api/state'),
+          headers: {},
+          timeout: const Duration(milliseconds: 100),
+        ),
+        throwsA(isA<TimeoutException>()),
+      );
+      expect(listening, isTrue);
+      final next = await sendCloudRequest(
+        client,
+        'POST',
+        Uri.parse('https://home.example/api/state'),
+        headers: {},
+      );
+      expect(next.body, '{}');
+      await body.close();
+      client.close();
+    },
+    timeout: const Timeout(Duration(seconds: 10)),
+  );
 }
