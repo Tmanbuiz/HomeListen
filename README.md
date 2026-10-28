@@ -97,6 +97,8 @@ Each viewer has one current session, replaced on reconnect and expiring after tw
 
 On the web listener, **Log out** stops audio, removes the browser from the home when the server is reachable, clears its saved pairing, and signs out. Pair again to resume. Offline logout still clears local access; the owner can remove any remaining device entry at home. Saved local recordings and history are retained and can be deleted using their own controls.
 
+Authenticator codes remain single-use. Reusing an authentic but already-spent code is rejected with a wait-for-next-code message and does not count toward the wrong-code lock. Wrong codes and request throttles still apply. If the secret-answer lookup is missing, the owner can re-save the same question/answer in Devices to repair it without replacing the authenticator. Existing lockouts must expire before retrying.
+
 Private documents hold hashed invitations and push destinations. Clients cannot enroll themselves, edit membership, start sharing, read push tokens or access another viewer's session. Only current participants write SDP/ICE. Membership, generation and current-session checks invalidate access after revocation.
 
 ## Device testing and limits

@@ -349,7 +349,7 @@ async function joinWithCode() {
     el("answer").value = ""; el("totp-code").value = "";
     await watchRoom(result.roomId);
     event("Paired with your home phone");
-  } catch (error) { message(error.message, true); el("totp-code").select(); }
+  } catch (error) { message(error.message, true); el("totp-code").value = ""; el("totp-code").focus(); }
   finally { el("code-button").disabled = false; }
 }
 el("code-form").addEventListener("submit", (e) => { e.preventDefault(); void joinWithCode(); });
@@ -358,7 +358,5 @@ el("totp-code").addEventListener("input", () => {
   if (!el("answer").value.trim()) { message("Enter the secret answer for your home.", true); el("answer").focus(); return; }
   void joinWithCode();
 });
-el("answer").addEventListener("input", () => {
-  if (el("totp-code").value.replace(/\D/g, "").length === 6) void joinWithCode();
-});
+
 

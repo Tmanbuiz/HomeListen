@@ -941,8 +941,9 @@ class CloudConnection {
       final ice = await api('/rooms/$roomId/ice', {});
       if (!sharing ||
           epoch != _epoch ||
-          !_authorizedSessions(room ?? {}).contains(id))
+          !_authorizedSessions(room ?? {}).contains(id)) {
         return;
+      }
       peer = await _CloudPeer.create(
         _db!,
         roomId!,
@@ -974,8 +975,9 @@ class CloudConnection {
       await peer.pc.setLocalDescription(answer);
       if (!sharing ||
           epoch != _epoch ||
-          !_authorizedSessions(room ?? {}).contains(id))
+          !_authorizedSessions(room ?? {}).contains(id)) {
         return;
+      }
       await _db!.doc('rooms/$roomId/sessions/$id').update({
         'answer': answer.sdp,
       });
