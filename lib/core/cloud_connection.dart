@@ -691,7 +691,7 @@ class CloudConnection {
     if (value && _pendingHeartbeat != null) return _pendingHeartbeat!;
     final epoch = _epoch;
     final next = _stateTail.then((_) async {
-      if (_closed || epoch != _epoch || value != sharing) return;
+      if (_closed || (value && epoch != _epoch) || value != sharing) return;
       await api('/rooms/$roomId/state', {
         'sharing': value,
         'roomName': _name,
@@ -700,7 +700,7 @@ class CloudConnection {
         'audioAvailable': value && _liveAudio,
         'detector': _detector,
       });
-      if (_closed || epoch != _epoch || value != sharing) return;
+      if (_closed || (value && epoch != _epoch) || value != sharing) return;
       lastPublished = DateTime.now();
       _publishProblem = null;
       onChanged();
