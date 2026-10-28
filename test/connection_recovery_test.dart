@@ -21,6 +21,7 @@ void main() {
       },
       onData: values.add,
       onError: (_) => errors++,
+      accept: (value) => value >= 0,
     );
     sources[0].add(1);
     await tester.pump();
@@ -29,6 +30,7 @@ void main() {
     expect(errors, 1);
     await tester.pump(const Duration(seconds: 2));
     expect(sources, hasLength(2));
+    sources[1].add(-1); // Cached/unverified data must not restore access.
     sources[1].add(2);
     await tester.pump();
     expect(values, [1, 2]);

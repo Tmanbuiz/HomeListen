@@ -85,7 +85,8 @@ async function watchRoom(id) {
   localStorage.setItem(storageKey, id);
   el("pair-panel").hidden = true; el("home-panel").hidden = false; recordingsPanel.hidden = false; void renderHistory();
   roomUnsubscribe = recoveringWatch(
-    (next, error) => onSnapshot(doc(db, "rooms", id), next, error),
+    (next, error) => onSnapshot(doc(db, "rooms", id), { includeMetadataChanges: true },
+      (snapshot) => { if (!snapshot.metadata.fromCache) next(snapshot); }, error),
     (snapshot) => {
     if (roomId !== id) return;
     if (!snapshot.exists()) { revoke(); return; }

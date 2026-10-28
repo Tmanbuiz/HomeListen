@@ -2,13 +2,19 @@ import 'dart:async';
 
 /// Reattaches terminal signaling streams without changing pairing or capture.
 class RecoveringWatch<T> {
-  RecoveringWatch(this.source, {required this.onData, required this.onError}) {
+  RecoveringWatch(
+    this.source, {
+    required this.onData,
+    required this.onError,
+    this.accept,
+  }) {
     _connect();
   }
 
   final Stream<T> Function() source;
   final void Function(T) onData;
   final void Function(Object) onError;
+  final bool Function(T)? accept;
   StreamSubscription<T>? _subscription;
   Timer? _retry;
   bool _closed = false;
@@ -21,6 +27,7 @@ class RecoveringWatch<T> {
       _subscription = source().listen(
         (value) {
           if (_closed || generation != _generation) return;
+          if (accept?.call(value) == false) return;
           _failures = 0;
           onData(value);
         },

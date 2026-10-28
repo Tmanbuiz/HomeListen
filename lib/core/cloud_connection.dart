@@ -566,7 +566,10 @@ class CloudConnection {
     unawaited(_roomSub?.cancel());
     final watchedRoom = roomId;
     _roomSub = RecoveringWatch(
-      () => _db!.doc('rooms/$watchedRoom').snapshots(),
+      () => _db!
+          .doc('rooms/$watchedRoom')
+          .snapshots(includeMetadataChanges: true),
+      accept: (snapshot) => !snapshot.metadata.isFromCache,
       onData: (snapshot) {
         if (_closed || roomId != watchedRoom) return;
         _watchProblem = null;
@@ -589,7 +592,10 @@ class CloudConnection {
           for (final id in ids) {
             if (_offers.containsKey(id)) continue;
             _offers[id] = RecoveringWatch(
-              () => _db!.doc('rooms/$watchedRoom/sessions/$id').snapshots(),
+              () => _db!
+                  .doc('rooms/$watchedRoom/sessions/$id')
+                  .snapshots(includeMetadataChanges: true),
+              accept: (snapshot) => !snapshot.metadata.isFromCache,
               onData: (s) {
                 if (!_closed &&
                     sharing &&
