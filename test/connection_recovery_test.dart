@@ -7,63 +7,67 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 void main() {
-  testWidgets('terminal signaling error retries and Stop cancels recovery', (
-    tester,
-  ) async {
-    final sources = <StreamController<int>>[];
-    final values = <int>[];
-    var errors = 0;
-    final watch = RecoveringWatch<int>(
-      () {
-        final source = StreamController<int>();
-        sources.add(source);
-        return source.stream;
-      },
-      onData: values.add,
-      onError: (_) => errors++,
-      accept: (value) => value >= 0,
-    );
-    sources[0].add(1);
-    await tester.pump();
-    sources[0].addError(StateError('unavailable'));
-    await tester.pump();
-    expect(errors, 1);
-    await tester.pump(const Duration(seconds: 2));
-    expect(sources, hasLength(2));
-    sources[1].add(-1); // Cached/unverified data must not restore access.
-    sources[1].add(2);
-    await tester.pump();
-    expect(values, [1, 2]);
-    sources[1].addError(StateError('network changed'));
-    await tester.pump();
-    await watch.cancel();
-    await tester.pump(const Duration(minutes: 2));
-    expect(sources, hasLength(2));
-    for (final source in sources) {
-      await source.close();
-    }
-  });
+  testWidgets(
+    'terminal signaling error retries and Stop cancels recovery',
+    (tester) async {
+      final sources = <StreamController<int>>[];
+      final values = <int>[];
+      var errors = 0;
+      final watch = RecoveringWatch<int>(
+        () {
+          final source = StreamController<int>();
+          sources.add(source);
+          return source.stream;
+        },
+        onData: values.add,
+        onError: (_) => errors++,
+        accept: (value) => value >= 0,
+      );
+      sources[0].add(1);
+      await tester.pump();
+      sources[0].addError(StateError('unavailable'));
+      await tester.pump();
+      expect(errors, 1);
+      await tester.pump(const Duration(seconds: 2));
+      expect(sources, hasLength(2));
+      sources[1].add(-1); // Cached/unverified data must not restore access.
+      sources[1].add(2);
+      await tester.pump();
+      expect(values, [1, 2]);
+      sources[1].addError(StateError('network changed'));
+      await tester.pump();
+      await watch.cancel();
+      await tester.pump(const Duration(minutes: 2));
+      expect(sources, hasLength(2));
+      for (final source in sources) {
+        unawaited(source.close());
+      }
+    },
+    timeout: const Timeout(Duration(seconds: 30)),
+  );
 
-  testWidgets('repeated connection failures back off instead of spinning', (
-    tester,
-  ) async {
-    var attempts = 0;
-    final watch = RecoveringWatch<int>(
-      () {
-        attempts++;
-        throw StateError('offline');
-      },
-      onData: (_) {},
-      onError: (_) {},
-    );
-    await tester.pump(const Duration(seconds: 2));
-    expect(attempts, 2);
-    await tester.pump(const Duration(seconds: 3));
-    expect(attempts, 2);
-    await tester.pump(const Duration(seconds: 1));
-    expect(attempts, 3);
-    await watch.cancel();
-  });
+  testWidgets(
+    'repeated connection failures back off instead of spinning',
+    (tester) async {
+      var attempts = 0;
+      final watch = RecoveringWatch<int>(
+        () {
+          attempts++;
+          throw StateError('offline');
+        },
+        onData: (_) {},
+        onError: (_) {},
+      );
+      await tester.pump(const Duration(seconds: 2));
+      expect(attempts, 2);
+      await tester.pump(const Duration(seconds: 3));
+      expect(attempts, 2);
+      await tester.pump(const Duration(seconds: 1));
+      expect(attempts, 3);
+      await watch.cancel();
+    },
+    timeout: const Timeout(Duration(seconds: 30)),
+  );
 
   testWidgets(
     'disconnected peer expires, recovered peer and Stop cancel deadline',
@@ -86,6 +90,7 @@ void main() {
       await tester.pump(const Duration(seconds: 40));
       expect(failures, 1);
     },
+    timeout: const Timeout(Duration(seconds: 30)),
   );
 
   test(
