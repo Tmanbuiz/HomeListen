@@ -501,7 +501,7 @@ class HomeMonitor extends ChangeNotifier {
   MonitorRole get role => _role;
   DeviceRole get deviceRole => _deviceRole;
   bool get needsSetup => prefs?.getString('device_role') == null;
-  String? get error => _error;
+  String? get error => _error ?? _cloud?.connectionProblem;
   bool get isTalking => _role == MonitorRole.talking;
   bool get isGuardian => _role == MonitorRole.guardian;
   bool get isMonitoring => isTalking || isGuardian;

@@ -256,6 +256,62 @@ test("a code can be used once, and the next one works", async () => {
   assert.equal((await byCode(s, QA.answer, await codeNow(s, secret), "second")).status, 200);
 });
 
+test("retrying a spent setup or join code never locks out the next fresh code", async () => {
+  const s = setup(); const { id, secret } = await protectedHome(s);
+  const setupCode = await codeNow(s, secret);
+  for (let i = 0; i < 5; i++) {
+    const replay = await byCode(s, QA.answer, setupCode);
+    assert.equal(replay.status, 403);
+    assert.match(replay.body.error, /already used.*next code/i);
+  }
+  let state = (await s.store.get("roomTotp/" + id)).data;
+  assert.equal(state.failures ?? 0, 0);
+  assert.equal(state.lockedUntilMs ?? 0, 0);
+  s.advance(31000);
+  const joinedCode = await codeNow(s, secret);
+  assert.equal((await byCode(s, QA.answer, joinedCode)).status, 200);
+  assert.equal((await byCode(s, QA.answer, joinedCode, "second")).status, 403);
+  state = (await s.store.get("roomTotp/" + id)).data;
+  assert.equal(state.failures, 0);
+  s.advance(30000);
+  assert.equal((await byCode(s, QA.answer, await codeNow(s, secret), "second")).status, 200);
+});
+
+test("owner re-saving the same secret answer repairs a missing lookup without replacing authenticator", async () => {
+  const s = setup(); const { id, secret } = await protectedHome(s);
+  const before = (await s.store.get("roomTotp/" + id)).data;
+  await s.store.delete("answerIndex/" + before.answerHash);
+  s.advance(31000);
+  assert.equal((await byCode(s, QA.answer, await codeNow(s, secret))).status, 403);
+  assert.equal((await s.api("/rooms/" + id + "/answer-set", "home", QA)).status, 200);
+  const after = (await s.store.get("roomTotp/" + id)).data;
+  assert.equal(after.secret, before.secret);
+  assert.equal(after.lastCounter, before.lastCounter);
+  assert.equal((await byCode(s, QA.answer, await codeNow(s, secret))).status, 200);
+});
+
+test("repairing an answer index cannot take another home's reservation", async () => {
+  const s = setup(); const { id } = await protectedHome(s);
+  const { answerHash } = (await s.store.get("roomTotp/" + id)).data;
+  await s.store.put("answerIndex/" + answerHash, { roomId: "another-home" });
+  assert.equal((await s.api("/rooms/" + id + "/answer-set", "home", QA)).status, 409);
+  assert.equal((await s.store.get("answerIndex/" + answerHash)).data.roomId, "another-home");
+});
+
+test("a provisional answer index cannot authenticate until the owner save commits", async () => {
+  const s = setup(); const { id, secret } = await protectedHome(s);
+  const original = (await s.store.get("roomTotp/" + id)).data;
+  await s.api("/rooms/" + id + "/answer-set", "home", { question: "Another question?", answer: "Maple Street" });
+  const provisionalHash = (await s.store.get("roomTotp/" + id)).data.answerHash;
+  const current = await s.store.get("roomTotp/" + id);
+  await s.store.put("roomTotp/" + id, original, current.version);
+  s.advance(31000);
+  const code = await codeNow(s, secret);
+  assert.equal((await byCode(s, "Maple Street", code)).status, 403);
+  assert.equal((await s.store.get("roomTotp/" + id)).data.lastCounter, original.lastCounter);
+  assert.equal((await s.store.get("answerIndex/" + provisionalHash)).data.roomId, id);
+});
+
 test("repeated wrong codes lock guessing, even for the right code, until the lock passes", async () => {
   const s = setup(); const { secret } = await protectedHome(s);
   s.advance(31000);
@@ -558,3 +614,4 @@ test("coughing alerts use a distinct category and notification title", async () 
   assert.equal(s.pushes[0].payload.kind, "coughing");
   assert.equal(s.pushes[0].payload.title, "Possible coughing");
 });
+

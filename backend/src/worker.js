@@ -135,7 +135,12 @@ async function spendTotp(store, id, doc, code, nowMs, env = {}, { owner = false 
   if (!clean) {
     throw new HttpError(403, "Enter the 6-digit code from your authenticator app.", "totp_required");
   }
-  const counter = await verifyTotp(base32Decode(await openSecret(env, data)), clean, nowMs, data.lastCounter ?? -1);
+  const counter = await verifyTotp(base32Decode(await openSecret(env, data)), clean, nowMs);
+  if (counter != null && counter <= (data.lastCounter ?? -1)) {
+    // A matching but spent code is not a guess. Keep replay prevention while
+    // avoiding a household-wide lockout when someone retries a setup/join code.
+    throw new HttpError(403, "That code was already used. Wait for the next code in your authenticator app.", "totp_invalid");
+  }
   const path = "roomTotp/" + id;
   if (counter == null && owner) {
     throw new HttpError(403, "That code is not right. Check the code in your authenticator app.", "totp_invalid");
@@ -419,17 +424,19 @@ export function createWorker(overrides = {}) {
       await throttle(store, "ip:" + (request.headers.get("cf-connecting-ip") ?? "unknown"), THROTTLE_PER_IP, now());
       if (!normalizeAnswer(input.answer)) throw refused();
       const currentKey = await answerKey(env, input.answer);
+      let lookupKey = currentKey;
       let index = await store.get("answerIndex/" + currentKey);
       let upgrade = false;
       if (!index && env.ANSWER_PEPPER) {
         // An answer saved before the key was set: accept it once, then re-save it keyed.
-        index = await store.get("answerIndex/" + await legacyAnswerKey(input.answer));
+        lookupKey = await legacyAnswerKey(input.answer);
+        index = await store.get("answerIndex/" + lookupKey);
         upgrade = Boolean(index);
       }
       if (!index) throw refused();
       const roomId = index.data.roomId;
       const totp = await store.get("roomTotp/" + roomId);
-      if (!totp?.data.enabled) throw refused();
+      if (!totp?.data.enabled || totp.data.answerHash !== lookupKey) throw refused();
       await spendTotp(store, roomId, totp, input.code, now(), env);
       if (upgrade) {
         const fresh = await store.get("roomTotp/" + roomId);
@@ -579,7 +586,9 @@ export function createWorker(overrides = {}) {
         throw new HttpError(400, "Use a secret answer of 3 to 80 characters.");
       }
       const answerHash = await answerKey(env, input.answer);
-      if (answerHash !== doc.data.answerHash) {
+      {
+        // Re-saving the current answer must also repair a missing index.
+        // Never take an answer reserved by another home.
         try {
           await store.put("answerIndex/" + answerHash, { roomId: id }, null);
         } catch (error) {
@@ -757,4 +766,5 @@ export function createWorker(overrides = {}) {
 }
 
 export default createWorker();
+
 
