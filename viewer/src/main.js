@@ -1,8 +1,10 @@
 import "./style.css";
 import { initializeApp } from "firebase/app";
-import { getAuth, signInAnonymously } from "firebase/auth";
+import { getAuth, signInAnonymously, signOut } from "firebase/auth";
 import { getFirestore, doc, collection, onSnapshot, updateDoc, addDoc, Timestamp } from "firebase/firestore";
 import { parsePairing } from "./pairing.js";
+import { recoveringWatch } from "./recovering-watch.js";
+import { logoutViewer } from "./logout.js";
 import { AudioSession } from "./audio-session.js";
 import { createAlertRecordings } from "./alert-recordings.js";
 import { memberAccess, canListen } from "./access.js";
@@ -15,10 +17,11 @@ const recordingsPanel = document.createElement("section");
 recordingsPanel.className = "card";
 el("home-panel").after(recordingsPanel);
 const recordings = createAlertRecordings(recordingsPanel);
+recordingsPanel.hidden = true;
 el("connection").textContent = "Live audio · recording optional";
 let auth, db, config, roomId = localStorage.getItem(storageKey);
 let room, roomUnsubscribe, session, starting = false, registration, alertsEnabled = false;
-let leaseTimer;
+let leaseTimer, loggingOut = false;
 const openedInvite = location.hash.includes("pair=") ? location.href : null;
 // The bearer invitation is never left in browser history or sent to a server.
 if (openedInvite) history.replaceState(null, "", location.pathname + location.search);
@@ -37,8 +40,13 @@ function event(text) {
   el("empty-activity").hidden = true;
 }
 async function api(path, data = undefined, method = "POST") {
-  const token = await auth.currentUser.getIdToken();
+  let tokenTimer;
+  const token = await Promise.race([
+    auth.currentUser.getIdToken(),
+    new Promise((_, reject) => { tokenTimer = setTimeout(() => reject(new Error("Sign-in timed out. Try again.")), 15_000); })
+  ]).finally(() => clearTimeout(tokenTimer));
   const response = await fetch("/api" + path, {
+    signal: AbortSignal.timeout(15_000),
     method, headers: { authorization: "Bearer " + token, "content-type": "application/json" },
     ...(data === undefined ? {} : { body: JSON.stringify(data) })
   });
@@ -75,8 +83,11 @@ async function watchRoom(id) {
   roomUnsubscribe?.();
   roomId = id;
   localStorage.setItem(storageKey, id);
-  el("pair-panel").hidden = true; el("home-panel").hidden = false; void renderHistory();
-  roomUnsubscribe = onSnapshot(doc(db, "rooms", id), (snapshot) => {
+  el("pair-panel").hidden = true; el("home-panel").hidden = false; recordingsPanel.hidden = false; void renderHistory();
+  roomUnsubscribe = recoveringWatch(
+    (next, error) => onSnapshot(doc(db, "rooms", id), next, error),
+    (snapshot) => {
+    if (roomId !== id) return;
     if (!snapshot.exists()) { revoke(); return; }
     const next = snapshot.data();
     if (next.members?.[auth.currentUser.uid] !== true) { revoke(); return; }
@@ -86,7 +97,14 @@ async function watchRoom(id) {
     message(!sharing() ? "Start monitoring on the home phone." :
       canListen(room, auth.currentUser.uid) ? "Your home phone is ready. Choose when to listen." :
       "Live audio is off for this phone. Enable alerts to receive selected sound notifications.");
-  }, () => revoke());
+  }, (error) => {
+    if (roomId !== id) return;
+    room = null;
+    void stopListening("Cloud connection lost. Waiting for the home phone…");
+    message(error.code === "permission-denied"
+      ? "Cloud access could not be verified. Check access and server rules; retrying."
+      : "Cloud connection lost. Reconnecting automatically.", true);
+  });
   clearInterval(leaseTimer);
   leaseTimer = setInterval(renderRoom, 10_000);
 }
@@ -95,7 +113,7 @@ function revoke(reason = "Pairing was removed or changed. Show a new code at hom
   roomUnsubscribe?.(); roomUnsubscribe = null;
   clearInterval(leaseTimer); room = null; roomId = null;
   localStorage.removeItem(storageKey);
-  el("home-panel").hidden = true; el("pair-panel").hidden = false; void renderHistory();
+  el("home-panel").hidden = true; recordingsPanel.hidden = true; el("pair-panel").hidden = false; void renderHistory();
   message(reason, true);
 }
 function browserName() {
@@ -154,8 +172,10 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) void
 void renderHistory();
 
 async function pair(value) {
+  if (loggingOut) return;
   const invite = parsePairing(value, location.origin);
   if (!invite) throw new Error("Use a Home Listen pairing link from this server.");
+  if (!auth.currentUser) await signInAnonymously(auth);
   await api("/rooms/" + invite.roomId + "/join", { secret: invite.secret, label: browserName() });
   el("pair-code").value = "";
   await watchRoom(invite.roomId);
@@ -175,7 +195,7 @@ function signaling(id) {
   };
 }
 async function startListening() {
-  if (!canListen(room, auth.currentUser.uid) || session || starting) return;
+  if (loggingOut || !canListen(room, auth.currentUser.uid) || session || starting) return;
   starting = true; renderRoom();
   el("audio-status").textContent = "Connecting to your room…";
   const current = new AudioSession({
@@ -218,7 +238,7 @@ function vapidBytes(value) {
   return Uint8Array.from(binary, (char) => char.charCodeAt(0));
 }
 async function toggleAlerts() {
-  if (!roomId) return;
+  if (loggingOut || !roomId) return;
   el("alerts-button").disabled = true;
   try {
     if (alertsEnabled) {
@@ -264,6 +284,24 @@ el("forget-button").addEventListener("click", async () => {
   try { await api("/rooms/" + roomId + "/leave", {}); revoke(); message("Home phone forgotten. You can pair again with a new link."); }
   catch (error) { message(error.message, true); }
 });
+el("logout-button").addEventListener("click", async () => {
+  if (loggingOut) return;
+  loggingOut = true;
+  el("logout-button").disabled = true;
+  const leavingRoom = roomId;
+  roomUnsubscribe?.(); roomUnsubscribe = null;
+  clearInterval(leaseTimer);
+  try {
+    await logoutViewer({
+      stop: () => stopListening("Logging out…"),
+      leave: () => leavingRoom ? api("/rooms/" + leavingRoom + "/leave", {}) : Promise.resolve(),
+      clear: () => revoke("Logged out. Pair again to listen on this browser."),
+      signOut: () => signOut(auth)
+    });
+    message("Logged out. Pair again to listen on this browser.");
+  } catch (error) { message(error.message, true); }
+  finally { loggingOut = false; el("logout-button").disabled = false; }
+});
 window.addEventListener("offline", () => { void stopListening("This phone is offline."); message("No internet connection.", true); });
 window.addEventListener("pagehide", () => { void stopListening(); });
 el("install-help").hidden = !(/iPhone|iPad/.test(navigator.userAgent) && !matchMedia("(display-mode: standalone)").matches);
@@ -299,11 +337,13 @@ try {
 // The other way in: the home's secret answer plus a current authenticator code.
 // It submits by itself once the answer is filled and the sixth digit is typed.
 async function joinWithCode() {
+  if (loggingOut) return;
   const answer = el("answer").value.trim();
   const code = el("totp-code").value.replace(/\D/g, "");
   if (!answer || code.length !== 6 || el("code-button").disabled) return;
   el("code-button").disabled = true;
   try {
+    if (!auth.currentUser) await signInAnonymously(auth);
     const result = await api("/join-code", { answer, code, label: browserName() });
     el("answer").value = ""; el("totp-code").value = "";
     await watchRoom(result.roomId);
@@ -320,3 +360,4 @@ el("totp-code").addEventListener("input", () => {
 el("answer").addEventListener("input", () => {
   if (el("totp-code").value.replace(/\D/g, "").length === 6) void joinWithCode();
 });
+

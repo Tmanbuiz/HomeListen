@@ -15,6 +15,8 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'cloud_pairing.dart';
+import 'cloud_request.dart';
+import 'recovering_watch.dart';
 import 'guardian_settings.dart';
 import 'recording_wire.dart';
 import 'alert_inbox.dart';
@@ -267,7 +269,7 @@ class CloudConnection {
   FirebaseFirestore? _db;
   Future<void>? _ready;
   Future<void> _stateTail = Future<void>.value();
-  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _roomSub;
+  RecoveringWatch<DocumentSnapshot<Map<String, dynamic>>>? _roomSub;
   StreamSubscription<dynamic>? _pcmSub;
   StreamSubscription<RemoteMessage>? _messages;
   StreamSubscription<RemoteMessage>? _openedMessages;
@@ -276,7 +278,7 @@ class CloudConnection {
   RTCPeerConnection? _anchorSender, _anchorReceiver;
   Timer? _heartbeat, _lease;
   final Map<String, _CloudPeer> _peers = {};
-  final Map<String, StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>>
+  final Map<String, RecoveringWatch<DocumentSnapshot<Map<String, dynamic>>>>
   _offers = {};
   final Set<String> _accepting = {};
   _CloudPeer? _away;
@@ -286,6 +288,8 @@ class CloudConnection {
   bool _liveAudio = true, _supportsGuardian = false;
   Map<String, Object?> _detector = {};
   DateTime? lastPublished;
+  String? _watchProblem, _publishProblem;
+  String? get connectionProblem => _watchProblem ?? _publishProblem;
   int _epoch = 0;
   String? inviteCode;
   DateTime? inviteExpires;
@@ -418,15 +422,19 @@ class CloudConnection {
   ]) async {
     await ensureReady();
     if (_closed) throw StateError('This connection was closed.');
-    final token = await _auth!.currentUser!.getIdToken();
-    final request = http.Request(method, Uri.parse('$origin/api$path'))
-      ..headers.addAll({
+    final token = await _auth!.currentUser!.getIdToken().timeout(
+      const Duration(seconds: 15),
+    );
+    if (_closed) throw StateError('This connection was closed.');
+    final response = await sendCloudRequest(
+      _client,
+      method,
+      Uri.parse('$origin/api$path'),
+      headers: {
         'authorization': 'Bearer $token',
         'content-type': 'application/json',
-      });
-    if (data != null) request.body = jsonEncode(data);
-    final response = await http.Response.fromStream(
-      await _client.send(request).timeout(const Duration(seconds: 15)),
+      },
+      body: data == null ? null : jsonEncode(data),
     );
     final result = jsonDecode(response.body) as Map<String, dynamic>;
     if (response.statusCode >= 400) {
@@ -556,43 +564,81 @@ class CloudConnection {
 
   void _watchRoom() {
     unawaited(_roomSub?.cancel());
-    _roomSub = _db!.doc('rooms/$roomId').snapshots().listen((snapshot) {
-      final data = snapshot.data();
-      final uid = _auth!.currentUser!.uid;
-      if (data == null || (!home && (data['members'] as Map?)?[uid] != true)) {
-        unawaited(_revoked());
-        return;
-      }
-      room = data;
-      if (home && sharing) {
-        final ids = _authorizedSessions(data);
-        for (final id in _offers.keys.toList()) {
-          if (!ids.contains(id)) {
-            unawaited(_offers.remove(id)?.cancel());
-            unawaited(_peers.remove(id)?.close());
+    final watchedRoom = roomId;
+    _roomSub = RecoveringWatch(
+      () => _db!.doc('rooms/$watchedRoom').snapshots(),
+      onData: (snapshot) {
+        if (_closed || roomId != watchedRoom) return;
+        _watchProblem = null;
+        final data = snapshot.data();
+        final uid = _auth!.currentUser!.uid;
+        if (data == null ||
+            (!home && (data['members'] as Map?)?[uid] != true)) {
+          unawaited(_revoked());
+          return;
+        }
+        room = data;
+        if (home && sharing) {
+          final ids = _authorizedSessions(data);
+          for (final id in _offers.keys.toList()) {
+            if (!ids.contains(id)) {
+              unawaited(_offers.remove(id)?.cancel());
+              unawaited(_peers.remove(id)?.close());
+            }
+          }
+          for (final id in ids) {
+            if (_offers.containsKey(id)) continue;
+            _offers[id] = RecoveringWatch(
+              () => _db!.doc('rooms/$watchedRoom/sessions/$id').snapshots(),
+              onData: (s) {
+                if (!_closed &&
+                    sharing &&
+                    roomId == watchedRoom &&
+                    _authorizedSessions(room ?? {}).contains(id)) {
+                  unawaited(_accept(id, s.data()));
+                }
+              },
+              onError: (Object _) => _dropHomePeer(id),
+            );
           }
         }
-        for (final id in ids) {
-          if (_offers.containsKey(id)) continue;
-          _offers[id] = _db!
-              .doc('rooms/$roomId/sessions/$id')
-              .snapshots()
-              .listen(
-                (s) => unawaited(_accept(id, s.data())),
-                onError: (Object _) => _dropHomePeer(id),
-              );
+        final active = data['activeSessions'] as Map? ?? {};
+        if (!home && _away != null && active[uid] != _away!.id) {
+          unawaited(stopAway(disableAlerts: false));
+          onProblem('This listening connection was replaced or revoked.');
         }
-      }
-      final active = data['activeSessions'] as Map? ?? {};
-      if (!home && _away != null && active[uid] != _away!.id) {
-        unawaited(stopAway(disableAlerts: false));
-        onProblem('This listening connection was replaced or revoked.');
-      }
-      onChanged();
-    }, onError: (Object _) => unawaited(_revoked()));
+        onChanged();
+      },
+      onError: (Object error) {
+        if (_closed || roomId != watchedRoom) return;
+        // A failed watch is not proof that membership was removed. Suspend
+        // audio access until a fresh authorized snapshot arrives, but keep the
+        // saved pairing and retry the terminal subscription.
+        room = null;
+        _watchProblem =
+            error is FirebaseException && error.code == 'permission-denied'
+            ? 'Cloud access could not be verified. Check access and server rules; retrying.'
+            : 'Cloud signaling disconnected. Reconnecting automatically.';
+        for (final watch in _offers.values) {
+          unawaited(watch.cancel());
+        }
+        _offers.clear();
+        for (final id in _peers.keys.toList()) {
+          _dropHomePeer(id);
+        }
+        if (!home) unawaited(stopAway(disableAlerts: false));
+        onChanged();
+      },
+    );
   }
 
   Future<void> _revoked() async {
+    await _roomSub?.cancel();
+    _roomSub = null;
+    if (home) {
+      await stopHome();
+      room = null;
+    }
     await stopAway(disableAlerts: false);
     if (!home) {
       roomId = null;
@@ -632,9 +678,14 @@ class CloudConnection {
 
   void detectorHealth(Map<String, Object?> value) => _detector = value;
 
+  Future<void>? _pendingHeartbeat;
+
   Future<void> _publish(bool value) {
     if (!home || roomId == null) return Future<void>.value();
+    if (value && _pendingHeartbeat != null) return _pendingHeartbeat!;
+    final epoch = _epoch;
     final next = _stateTail.then((_) async {
+      if (_closed || epoch != _epoch || value != sharing) return;
       await api('/rooms/$roomId/state', {
         'sharing': value,
         'roomName': _name,
@@ -643,9 +694,20 @@ class CloudConnection {
         'audioAvailable': value && _liveAudio,
         'detector': _detector,
       });
+      if (_closed || epoch != _epoch || value != sharing) return;
       lastPublished = DateTime.now();
+      _publishProblem = null;
+      onChanged();
     });
     _stateTail = next.catchError((Object _) {});
+    if (value) {
+      _pendingHeartbeat = next;
+      unawaited(
+        _stateTail.whenComplete(() {
+          if (identical(_pendingHeartbeat, next)) _pendingHeartbeat = null;
+        }),
+      );
+    }
     return next;
   }
 
@@ -754,9 +816,10 @@ class CloudConnection {
       if (sharing) {
         unawaited(
           _publish(true).catchError((Object _) {
-            onProblem(
-              'Home phone cloud connection lost. Check internet; sharing remains visible here.',
-            );
+            if (_closed || !sharing) return;
+            _publishProblem =
+                'Home phone cloud connection lost. Reconnecting; local monitoring continues.';
+            onChanged();
           }),
         );
       }
@@ -870,7 +933,10 @@ class CloudConnection {
     _CloudPeer? peer;
     try {
       final ice = await api('/rooms/$roomId/ice', {});
-      if (!sharing || epoch != _epoch) return;
+      if (!sharing ||
+          epoch != _epoch ||
+          !_authorizedSessions(room ?? {}).contains(id))
+        return;
       peer = await _CloudPeer.create(
         _db!,
         roomId!,
@@ -881,7 +947,10 @@ class CloudConnection {
         onChanged: onChanged,
         onFailure: () => _dropHomePeer(id),
       );
-      if (!sharing || epoch != _epoch || !_offers.containsKey(id)) {
+      if (!sharing ||
+          epoch != _epoch ||
+          !_offers.containsKey(id) ||
+          !_authorizedSessions(room ?? {}).contains(id)) {
         await peer.close();
         return;
       }
@@ -897,7 +966,10 @@ class CloudConnection {
       await peer.flush();
       final answer = await peer.pc.createAnswer();
       await peer.pc.setLocalDescription(answer);
-      if (!sharing || epoch != _epoch) return;
+      if (!sharing ||
+          epoch != _epoch ||
+          !_authorizedSessions(room ?? {}).contains(id))
+        return;
       await _db!.doc('rooms/$roomId/sessions/$id').update({
         'answer': answer.sdp,
       });
@@ -1174,6 +1246,8 @@ class CloudConnection {
     sharing = false;
     _heartbeat?.cancel();
     _heartbeat = null;
+    _pendingHeartbeat = null;
+    _publishProblem = null;
     for (final sub in _offers.values) {
       await sub.cancel();
     }
@@ -1266,7 +1340,8 @@ class _CloudPeer {
         });
   }
 
-  Timer? _timeout, _expiry, _refresh;
+  PeerConnectionDeadline? _deadline;
+  Timer? _expiry, _refresh;
   Future<void> Function()? renewIce;
   bool connected = false, closed = false, _answerBusy = false;
   static Future<_CloudPeer> create(
@@ -1315,7 +1390,10 @@ class _CloudPeer {
       if (peer.closed) return;
       peer.connected =
           state == RTCPeerConnectionState.RTCPeerConnectionStateConnected;
-      if (peer.connected) peer._timeout?.cancel();
+      if (peer.connected) peer._deadline?.connected();
+      if (state == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
+        peer._deadline?.disconnected();
+      }
       if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
         onFailure();
       }
@@ -1385,8 +1463,8 @@ class _CloudPeer {
             if (!peer.closed) onFailure();
           },
         );
-    peer._timeout = Timer(const Duration(seconds: 35), () {
-      if (!peer.connected && !peer.closed) onFailure();
+    peer._deadline = PeerConnectionDeadline(() {
+      if (!peer.closed) onFailure();
     });
     peer._expiry = Timer(peer.expires.toDate().difference(DateTime.now()), () {
       if (!peer.closed) onFailure();
@@ -1415,7 +1493,7 @@ class _CloudPeer {
     if (closed) return;
     closed = true;
     connected = false;
-    _timeout?.cancel();
+    _deadline?.cancel();
     _expiry?.cancel();
     _refresh?.cancel();
     await _session?.cancel();
@@ -1434,8 +1512,14 @@ class _CloudPeer {
     pc.onConnectionState = null;
     await pc.close();
     await pc.dispose();
-    try {
-      await db.doc(path).update({'ended': true});
-    } catch (_) {}
+    // Firestore writes can wait indefinitely while offline. Local teardown
+    // must finish so Stop and the next listening session can proceed.
+    unawaited(
+      db
+          .doc(path)
+          .update({'ended': true})
+          .timeout(const Duration(seconds: 5))
+          .catchError((Object _) {}),
+    );
   }
 }

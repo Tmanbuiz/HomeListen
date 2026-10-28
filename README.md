@@ -93,7 +93,9 @@ The final backend command is a deployment dry run. For local preview, build view
 
 Guardian captures mono 16 kHz PCM locally with the Android recorder and creates no WebRTC microphone track. Guardian mode does not send recording audio to receivers. Live + Guardian opens one WebRTC microphone track; a Kotlin sample tap feeds its mono 16 kHz PCM to the local classifier. A muted peer pair inside the home phone keeps this live-mode capture active with no listeners. It has no ICE servers and never plays audio.
 
-Each viewer has one current session, replaced on reconnect and expiring after two hours. Native Android reconnects while listening remains enabled; Stop cancels recovery. The web app asks for another tap after a failed or expired session.
+Each viewer has one current session, replaced on reconnect and expiring after two hours. Native Android reconnects while listening remains enabled; Stop cancels recovery. Disconnected audio peers get a 12-second recovery window before a fresh connection is needed. The web app asks for another tap after a failed or expired audio session. Terminal cloud status/signaling errors retry with a bounded backoff without erasing pairing; audio access pauses until a fresh authorized status arrives. Home capture is never restarted by these retries.
+
+On the web listener, **Log out** stops audio, removes the browser from the home when the server is reachable, clears its saved pairing, and signs out. Pair again to resume. Offline logout still clears local access; the owner can remove any remaining device entry at home. Saved local recordings and history are retained and can be deleted using their own controls.
 
 Private documents hold hashed invitations and push destinations. Clients cannot enroll themselves, edit membership, start sharing, read push tokens or access another viewer's session. Only current participants write SDP/ICE. Membership, generation and current-session checks invalidate access after revocation.
 
@@ -117,3 +119,4 @@ Battery restrictions, force-stop, internet loss or denied notifications can inte
 Ordinary Actions APKs use preview/debug signing. [Permanent release signing](docs/ANDROID_RELEASE.md) includes local configuration and a manual signed-release workflow for your own key. Never commit service-account JSON, VAPID private keys, TURN keys or signing keys.
 
 YAMNet provenance/license are in [assets/models](assets/models). The download helper verifies the model checksum.
+

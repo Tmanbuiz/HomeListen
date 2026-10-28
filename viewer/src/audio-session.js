@@ -25,6 +25,13 @@ export class AudioSession {
     pc.onconnectionstatechange = () => {
       if (this.closed) return;
       this.onState(pc.connectionState);
+      if (pc.connectionState === "connected") {
+        clearTimeout(this.timeout); clearTimeout(this.disconnectTimeout);
+        this.disconnectTimeout = undefined;
+      }
+      if (pc.connectionState === "disconnected" && !this.disconnectTimeout) {
+        this.disconnectTimeout = setTimeout(() => fail(new Error("Audio connection lost. Tap Listen live to reconnect.")), 12_000);
+      }
       if (pc.connectionState === "failed") fail(new Error("Audio connection lost. Tap Listen live to reconnect."));
     };
     pc.onicecandidate = (event) => {
@@ -66,7 +73,7 @@ export class AudioSession {
     if (this.closed) return;
     await this.firestore.setOffer(session.sessionId, offer.sdp);
     if (this.closed) return;
-    this.timeout = setTimeout(() => fail(new Error("The home phone did not connect. Check sharing and the relay setup.")), 35_000);
+    if (pc.connectionState !== "connected") this.timeout = setTimeout(() => fail(new Error("The home phone did not connect. Check sharing and the relay setup.")), 35_000);
     const originalState = pc.onconnectionstatechange;
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === "connected") clearTimeout(this.timeout);
@@ -89,12 +96,14 @@ export class AudioSession {
   async stop() {
     if (this.closed) return;
     this.closed = true;
-    clearTimeout(this.timeout); clearTimeout(this.expiry); clearInterval(this.refresh);
+    clearTimeout(this.timeout); clearTimeout(this.disconnectTimeout); clearTimeout(this.expiry); clearInterval(this.refresh);
     for (const unsubscribe of this.unsubscribers.splice(0)) unsubscribe();
     if (this.pc) {
       this.pc.ontrack = this.pc.onicecandidate = this.pc.onconnectionstatechange = null;
       this.pc.close();
     }
-    await this.endRemote();
+    // Local Stop must not wait for an offline Firestore write.
+    void this.endRemote();
   }
 }
+
