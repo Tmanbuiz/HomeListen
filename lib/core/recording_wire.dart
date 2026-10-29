@@ -3,6 +3,24 @@ import 'dart:typed_data';
 /// Receiver-only recording transport inside an already authorized live peer.
 const alertAudioChannel = 'homelisten-alert-audio-v1';
 
+/// Native capture stamps survive scheduling delays and reveal dropped chunks.
+class CapturedAudioFrame {
+  CapturedAudioFrame(this.pcm, this.sequence, this.clock);
+  final Uint8List pcm;
+  final int? sequence, clock;
+
+  static CapturedAudioFrame? decode(Object? event) {
+    if (event is Uint8List) return CapturedAudioFrame(event, null, null);
+    if (event is! Map ||
+        event['pcm'] is! Uint8List ||
+        event['sequence'] is! int ||
+        event['clock'] is! int) {
+      return null;
+    }
+    return CapturedAudioFrame(event['pcm'], event['sequence'], event['clock']);
+  }
+}
+
 class AlertAudioPacket {
   AlertAudioPacket(this.sequence, this.clock, this.pcm);
   final int sequence, clock;

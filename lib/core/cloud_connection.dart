@@ -19,6 +19,7 @@ import 'cloud_request.dart';
 import 'recovering_watch.dart';
 import 'guardian_settings.dart';
 import 'recording_wire.dart';
+import 'recording_subscription.dart';
 import 'alert_inbox.dart';
 
 /// A refusal from the server. [code] says why when the app can act on it, e.g.
@@ -127,18 +128,15 @@ class CloudConnection {
   final void Function(String?, DateTime, double?)? onRecordingVerdict;
   final void Function()? onRecordingInterrupted;
   bool recordingRequested = false;
+  bool get recordingChannelOpen =>
+      _away?.recordingChannel?.state == RTCDataChannelState.RTCDataChannelOpen;
+  bool get recordingSubscriptionFailed =>
+      _away?.recordingSubscription?.exhausted == true;
   int _pcmSequence = 0;
 
   void requestRecordingAudio(bool enabled) {
     recordingRequested = enabled;
-    final channel = _away?.recordingChannel;
-    if (channel?.state == RTCDataChannelState.RTCDataChannelOpen) {
-      unawaited(
-        channel!
-            .send(RTCDataChannelMessage(enabled ? 'subscribe' : 'unsubscribe'))
-            .catchError((Object _) {}),
-      );
-    }
+    _away?.recordingSubscription?.request(enabled);
     if (!enabled) onRecordingInterrupted?.call();
   }
 
@@ -157,13 +155,13 @@ class CloudConnection {
     }
   }
 
-  void _publishRecordingPcm(Uint8List pcm) {
-    final sequence = _pcmSequence++;
+  void _publishRecordingPcm(Uint8List pcm, {int? sequence, int? captureClock}) {
+    final packetSequence = sequence ?? _pcmSequence++;
     if (!sharing || pcm.length > 6400 || pcm.length.isOdd) return;
     final packet = RTCDataChannelMessage.fromBinary(
       AlertAudioPacket.encode(
-        sequence,
-        DateTime.now().millisecondsSinceEpoch,
+        packetSequence,
+        captureClock ?? DateTime.now().millisecondsSinceEpoch,
         pcm,
       ),
     );
@@ -187,7 +185,12 @@ class CloudConnection {
         return;
       }
       if (message.isBinary) return;
-      if (message.text == 'subscribe') peer.recordingSubscribed = true;
+      if (message.text == 'subscribe') {
+        peer.recordingSubscribed = true;
+        peer.sendRecording(
+          RTCDataChannelMessage('{"type":"recording-ready","version":1}'),
+        );
+      }
       if (message.text == 'unsubscribe') peer.recordingSubscribed = false;
     };
     channel.onDataChannelState = (state) {
@@ -207,11 +210,20 @@ class CloudConnection {
       return;
     }
     peer.recordingChannel = channel;
+    peer.recordingSubscription = RecordingSubscription(
+      send: (message) async => channel.send(RTCDataChannelMessage(message)),
+      isOpen: () =>
+          !peer.closed &&
+          _away == peer &&
+          channel.state == RTCDataChannelState.RTCDataChannelOpen,
+      onChanged: onChanged,
+    );
+    peer.recordingSubscription!.request(recordingRequested);
     int? lastSequence, lastClock, lastSamples;
     channel.onDataChannelState = (state) {
       if (peer.closed || _away != peer) return;
       if (state == RTCDataChannelState.RTCDataChannelOpen) {
-        requestRecordingAudio(recordingRequested);
+        peer.recordingSubscription?.opened();
       } else {
         onRecordingInterrupted?.call();
       }
@@ -221,6 +233,7 @@ class CloudConnection {
       if (message.isBinary) {
         final packet = AlertAudioPacket.decode(message.binary);
         if (packet == null) return;
+        peer.recordingSubscription?.acknowledge();
         final gap =
             lastSequence != null &&
             (packet.sequence != ((lastSequence! + 1) & 0xffffffff) ||
@@ -234,7 +247,12 @@ class CloudConnection {
       } else if (message.text.length <= 512) {
         try {
           final data = jsonDecode(message.text);
-          if (data is! Map || data['type'] != 'verdict') return;
+          if (data is! Map) return;
+          if (data['type'] == 'recording-ready' && data['version'] == 1) {
+            peer.recordingSubscription?.acknowledge();
+            return;
+          }
+          if (data['type'] != 'verdict') return;
           final category = data['category'];
           if (category != null && !guardianCategories.contains(category)) {
             return;
@@ -755,9 +773,15 @@ class CloudConnection {
         .receiveBroadcastStream({'trackId': stream.getAudioTracks().first.id})
         .listen(
           (event) {
-            if (event is Uint8List) {
+            final frame = CapturedAudioFrame.decode(event);
+            if (frame != null) {
+              final event = frame.pcm;
               if (!ready.isCompleted) ready.complete();
-              _publishRecordingPcm(event);
+              _publishRecordingPcm(
+                event,
+                sequence: frame.sequence,
+                captureClock: frame.clock,
+              );
               final data = ByteData.sublistView(event);
               onPcm(
                 Int16List.fromList(
@@ -1324,6 +1348,7 @@ class _CloudPeer {
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _session;
   MediaStreamTrack? remoteTrack;
   RTCDataChannel? recordingChannel;
+  RecordingSubscription? recordingSubscription;
   bool recordingSubscribed = false;
   int _recordingPending = 0;
   Future<void> _recordingTail = Future<void>.value();
@@ -1507,6 +1532,7 @@ class _CloudPeer {
     await _session?.cancel();
     await _candidates?.cancel();
     recordingSubscribed = false;
+    recordingSubscription?.close();
     final channel = recordingChannel;
     recordingChannel = null;
     if (channel != null) {

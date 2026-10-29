@@ -82,6 +82,21 @@ test("32-bit timestamp wrap retains continuous audio", () => {
   f.recorder.stop(); assert.equal(f.clips.length, 1);
 });
 
+test('capture timestamps preserve a full crying episode through delivery jitter', () => {
+  const f = fixture('crying', 30);
+  const start = f.now;
+  for (let i=0;i<400;i++) {
+    // A frame is delivered late every 5s; none of the captured samples is lost.
+    const delivery = start + (i+1)*100 + (i%50 === 49 ? 100 : 0);
+    f.jump(delivery - f.now);
+    f.recorder.feed(packet(i, i*100));
+    if (i%5 === 4) f.recorder.observe('crying');
+  }
+  f.recorder.stop();
+  assert.equal(f.clips.length, 1);
+  assert.ok(f.clips[0].durationMs >= 39000);
+});
+
 test("single100ms source drop splits even when transport sequence is consecutive", () => {
   const f = fixture("crying", 1);
   for (let i = 0; i < 20; i++) f.advance();
@@ -177,3 +192,4 @@ test("IndexedDB cap retains newest clips under200MB", async () => {
   await store.save({ id: "b", startedAt: 1000000000, size: 150 * 1024 * 1024 });
   assert.deepEqual((await store.list()).map((clip) => clip.id), ["b"]);
 });
+

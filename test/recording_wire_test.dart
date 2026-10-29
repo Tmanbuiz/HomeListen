@@ -6,6 +6,28 @@ import 'package:home_listen/core/guardian_settings.dart';
 
 void main() {
   test(
+    'native capture stamps survive delivery delays and legacy frames still decode',
+    () {
+      final pcm = Uint8List.fromList([1, 0, 2, 0]);
+      final captured = CapturedAudioFrame.decode({
+        'pcm': pcm,
+        'sequence': 12,
+        'clock': 1200,
+      })!;
+      final packet = AlertAudioPacket.decode(
+        AlertAudioPacket.encode(
+          captured.sequence!,
+          captured.clock!,
+          captured.pcm,
+        ),
+      )!;
+      expect(packet.clock, 1200);
+      expect(packet.sequence, 12);
+      expect(CapturedAudioFrame.decode(pcm)!.pcm, pcm);
+      expect(CapturedAudioFrame.decode({'pcm': pcm, 'clock': 'wrong'}), isNull);
+    },
+  );
+  test(
     'recording transport preserves signed PCM, sequence and wrapped clock',
     () {
       final pcm = Uint8List.fromList([0, 128, 255, 127, 0, 0]);

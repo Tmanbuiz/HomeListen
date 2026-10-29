@@ -15,10 +15,13 @@ import java.util.concurrent.atomic.AtomicBoolean
 class WebRtcPcmTap(messenger: BinaryMessenger) : EventChannel.StreamHandler {
     private val main = Handler(Looper.getMainLooper())
     private val pending = AtomicBoolean(false)
+    private data class Delivery(val generation: Int, val payload: Map<String, Any>)
+    private val deliveries = ArrayDeque<Delivery>()
     private var track: LocalAudioTrack? = null
     @Volatile private var output: EventChannel.EventSink? = null
     private var generation = 0
     private val resampler = Pcm16Resampler()
+    private val captureClock = PcmFrameClock()
     private val buffer = ByteBuffer.allocate(3200).order(ByteOrder.LITTLE_ENDIAN)
     private val sink = object : AudioTrackSink {
         override fun onData(data: ByteBuffer, bits: Int, rate: Int, channels: Int, frames: Int, timestamp: Long) {
@@ -28,15 +31,32 @@ class WebRtcPcmTap(messenger: BinaryMessenger) : EventChannel.StreamHandler {
                 buffer.putShort(sample)
                 if (!buffer.hasRemaining()) {
                     val bytes = buffer.array().copyOf()
+                    val stamp = captureClock.next(bytes.size / 2)
                     buffer.clear()
-                    if (pending.compareAndSet(false, true)) {
-                        val current = generation
-                        main.post {
-                            if (generation == current) output?.success(bytes)
-                            pending.set(false)
-                        }
+                    synchronized(deliveries) {
+                        // At most two seconds of PCM, never an unbounded UI queue.
+                        if (deliveries.size < 20) deliveries.addLast(Delivery(generation, mapOf(
+                            "pcm" to bytes, "sequence" to stamp.sequence, "clock" to stamp.clockMs
+                        )))
                     }
+                    dispatch()
                 }
+            }
+        }
+    }
+    private fun dispatch() {
+        if (!pending.compareAndSet(false, true)) return
+        main.post {
+            try {
+                val batch = synchronized(deliveries) {
+                    deliveries.toList().also { deliveries.clear() }
+                }
+                for (item in batch) {
+                    if (generation == item.generation) output?.success(item.payload)
+                }
+            } finally {
+                pending.set(false)
+                if (synchronized(deliveries) { deliveries.isNotEmpty() }) dispatch()
             }
         }
     }
@@ -50,6 +70,7 @@ class WebRtcPcmTap(messenger: BinaryMessenger) : EventChannel.StreamHandler {
             return
         }
         resampler.reset()
+        captureClock.reset()
         buffer.clear()
         output = events
         track = local
@@ -60,5 +81,7 @@ class WebRtcPcmTap(messenger: BinaryMessenger) : EventChannel.StreamHandler {
         track?.removeSink(sink)
         track = null
         generation++
+        synchronized(deliveries) { deliveries.clear() }
     }
 }
+
