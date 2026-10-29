@@ -1,5 +1,7 @@
 // Receiver-only, opt-in recordings. PCM arrives inside the authorized live peer;
 // no microphone, upload, or service-worker/background recording is used here.
+import { RecordingSubscription } from './recording-subscription.js';
+
 export const RECORDING_CHANNEL = "homelisten-alert-audio-v1";
 export const CATEGORIES = ["crying", "coughing", "barking", "knocking", "loud sound"];
 export const LABELS = { crying: "Crying", coughing: "Coughing", barking: "Dog sounds", knocking: "Knocks and doorbells", "loud sound": "Loud sounds" };
@@ -201,7 +203,7 @@ export function createAlertRecordings(container) {
   let raw;
   try { raw = localStorage.getItem(settingsKey); } catch { /* unavailable */ }
   const rules = restoreRules(raw), store = new RecordingStore();
-  let channel = null, timer = null, epoch = 0, urls = [], saveTail = Promise.resolve(), problem = null, state = "Recording is off. Select the sounds to save.";
+  let channel = null, subscription = null, timer = null, epoch = 0, urls = [], saveTail = Promise.resolve(), problem = null, state = "Recording is off. Select the sounds to save.";
   const heading = document.createElement("h2"); heading.textContent = "Record sound alerts";
   const help = document.createElement("p"); help.className = "fine";
   help.textContent = "Optional audio is saved only in this receiving browser. Keep Listen live connected from the start of the sound. The home phone must use Live + Guardian and enable that sound. Recording can stop when the page closes or the device suspends. Browser storage can be cleared or evicted; download clips you want to keep.";
@@ -218,13 +220,13 @@ export function createAlertRecordings(container) {
     status.textContent = problem ?? (recorder.recording ? "● Recording this sound on this device…" :
       !recorder.enabled ? "Recording is off. Select the sounds to save." :
       channel?.readyState === "open" ? (recorder.lastPcmAt == null
-        ? "Waiting for recording audio · update the home app if this continues"
+        ? subscription?.exhausted ? "Home phone has not confirmed recording · update and restart the home app, then reconnect Listen live" : "Waiting for recording audio · update the home app if this continues"
         : recorder.waitingForVerdicts ? "Waiting for sound detector updates · no audio is being saved"
         : "Waiting for selected sounds · live connection required") : state);
     status.classList.toggle("recording-active", recorder.recording);
   }
   function subscribe() {
-    if (channel?.readyState === "open") channel.send(recorder.enabled ? "subscribe" : "unsubscribe");
+    subscription?.request(recorder.enabled);
     renderStatus();
   }
   function changed() {
@@ -273,17 +275,27 @@ export function createAlertRecordings(container) {
       this.stop(); const generation = ++epoch;
       channel = pc.createDataChannel(RECORDING_CHANNEL, { ordered: true });
       const current = channel; current.binaryType = "arraybuffer";
-      current.onopen = () => { if (generation === epoch) subscribe(); };
+      subscription = new RecordingSubscription({
+        send: (message) => current.send(message),
+        isOpen: () => generation === epoch && current.readyState === "open",
+        onChanged: renderStatus
+      });
+      subscription.request(recorder.enabled);
+      current.onopen = () => { if (generation === epoch) subscription?.opened(); };
       current.onmessage = (event) => {
         if (generation !== epoch || !recorder.enabled) return;
-        if (event.data instanceof ArrayBuffer) { recorder.feed(event.data); return; }
+        if (event.data instanceof ArrayBuffer) {
+          if (decodePcmPacket(event.data)) subscription?.acknowledge();
+          recorder.feed(event.data); return;
+        }
         if (typeof event.data !== "string" || event.data.length > 512) return;
         try {
           const verdict = JSON.parse(event.data);
+          if (verdict.type === "recording-ready" && verdict.version === 1) { subscription?.acknowledge(); return; }
           if (verdict.type === "verdict" && (verdict.category === null || CATEGORIES.includes(verdict.category)) && Number.isFinite(verdict.at)) recorder.observe(verdict.category, verdict.at);
         } catch { /* ignore malformed control data */ }
       };
-      current.onclose = current.onerror = () => { if (generation === epoch) { recorder.stop("connection interrupted"); state = "Recording stopped · reconnect live audio to continue."; renderStatus(); } };
+      current.onclose = current.onerror = () => { if (generation === epoch) { subscription?.close(); recorder.stop("connection interrupted"); state = "Recording stopped · reconnect live audio to continue."; renderStatus(); } };
       timer = setInterval(() => { recorder.tick(); renderStatus(); }, 500);
       state = "Recording armed · choose Listen live to receive audio."; renderStatus();
     },
@@ -292,9 +304,11 @@ export function createAlertRecordings(container) {
     },
     stop() {
       epoch++; clearInterval(timer); timer = null;
+      subscription?.close(); subscription = null;
       const old = channel; channel = null;
       if (old) { old.onopen = old.onmessage = old.onclose = old.onerror = null; old.close(); }
       recorder.stop(); state = "Recording armed · choose Listen live to receive audio."; renderStatus();
     }
   };
 }
+

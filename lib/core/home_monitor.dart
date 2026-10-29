@@ -244,6 +244,30 @@ class HomeMonitor extends ChangeNotifier {
   bool get recordingArmed => _deviceRole == DeviceRole.away && _recordingOptIn;
   bool get _canRecord => recordingArmed && isListening;
 
+  String get recordingStatus {
+    if (!recordingArmed) {
+      return 'Recording is off. Select a sound and tick its recording checkbox.';
+    }
+    if (!isListening) {
+      return 'Recording armed. Connect Listen live on this receiving device.';
+    }
+    if (cloudMode &&
+        _cloud?.recordingSubscriptionFailed == true &&
+        _lastRecordingPcm == null) {
+      return 'The home phone has not confirmed recording. Update and restart the home app, then reconnect Listen live.';
+    }
+    if (cloudMode && _cloud?.recordingChannelOpen != true) {
+      return 'Waiting for the recording connection to the home phone.';
+    }
+    if (_lastRecordingPcm == null) {
+      return 'Waiting for recording audio. Update the home app if this continues.';
+    }
+    if (_lastRecordingVerdict == null) {
+      return 'Audio is arriving. Waiting for sound detection; enable the selected sound at home.';
+    }
+    return 'Recording ready. Selected sounds are saved after their minimum duration and when the episode ends.';
+  }
+
   Future<void> loadRecordings() async {
     if (_deviceRole != DeviceRole.away) return;
     await _recordings.prune(retentionDays: _guardianSettings.retentionDays);
@@ -265,7 +289,9 @@ class HomeMonitor extends ChangeNotifier {
 
   void _observeRecording(String? category, DateTime at) {
     if (!_canRecord) return;
+    final firstVerdict = _lastRecordingVerdict == null;
     _lastRecordingVerdict = DateTime.now();
+    if (firstVerdict) _notify();
     final rule = _guardianSettings.rules[category];
     _recordings.observe(
       category,
@@ -280,7 +306,9 @@ class HomeMonitor extends ChangeNotifier {
 
   void _feedRecording(Int16List pcm) {
     if (!_canRecord) return;
+    final firstPcm = _lastRecordingPcm == null;
     _lastRecordingPcm = DateTime.now();
+    if (firstPcm) _notify();
     _recordingWatchdog ??= Timer.periodic(const Duration(seconds: 1), (_) {
       final pcmAt = _lastRecordingPcm;
       final verdictAt = _lastRecordingVerdict;

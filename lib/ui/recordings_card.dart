@@ -198,6 +198,10 @@ class _RecordingsCardState extends State<RecordingsCard> {
                 ],
               ),
             ],
+            if (!monitor.recordingAudio && !monitor.bufferingRecording) ...[
+              const SizedBox(height: 10),
+              Text(monitor.recordingStatus),
+            ],
             if (problem != null) ...[
               const SizedBox(height: 10),
               Text(
