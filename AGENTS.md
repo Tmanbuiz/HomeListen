@@ -42,3 +42,6 @@ Use existing scripts from the relevant package and required CI checks:
 For a documentation/agent-only change, validate file structure, references, frontmatter and git diff rather than rebuilding the apps.
 
 Report what changed, commands/results, and remaining device/environment gaps. Automated checks do not prove locked-screen capture, push delivery, network handover or sound-detection accuracy. Do not present this product as an emergency alarm. Preserve existing authorization boundaries for publishing and live deployments.
+
+## Version visibility
+For every user-facing update, increment the version or update/build identifier on every affected platform before release. Keep the current version visible in the web UI, including before pairing, and in the native app's version display. Web-only revisions may increment a visible web update number without rebuilding unchanged mobile binaries. Never reuse a displayed identifier for changed released behavior. Include the new identifier and verified deployment/build status in the handoff.
