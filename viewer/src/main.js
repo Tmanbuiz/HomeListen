@@ -82,6 +82,7 @@ async function watchRoom(id) {
   await stopListening();
   roomUnsubscribe?.();
   roomId = id;
+  el("forget-button").hidden = false;
   localStorage.setItem(storageKey, id);
   el("pair-panel").hidden = true; el("home-panel").hidden = false; recordingsPanel.hidden = false; void renderHistory();
   roomUnsubscribe = recoveringWatch(
@@ -114,6 +115,7 @@ function revoke(reason = "Pairing was removed or changed. Show a new code at hom
   roomUnsubscribe?.(); roomUnsubscribe = null;
   clearInterval(leaseTimer); room = null; roomId = null;
   localStorage.removeItem(storageKey);
+  el("forget-button").hidden = true;
   el("home-panel").hidden = true; recordingsPanel.hidden = true; el("pair-panel").hidden = false; void renderHistory();
   message(reason, true);
 }
@@ -315,6 +317,7 @@ try {
   const app = initializeApp(config.firebase);
   auth = getAuth(app); db = getFirestore(app);
   await auth.authStateReady();
+  el("logout-button").disabled = false;
   if (!auth.currentUser) await signInAnonymously(auth);
   if ("serviceWorker" in navigator) {
     await navigator.serviceWorker.register("/sw.js");
