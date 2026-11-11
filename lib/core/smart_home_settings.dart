@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
-const homeListenVersion = '2.2.0';
+const homeListenVersion = '2.2.4';
 const homeProfiles = ['home', 'away', 'night'];
 
 /// Credentials are stored separately in Android's encrypted storage.
