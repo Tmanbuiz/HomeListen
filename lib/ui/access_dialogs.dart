@@ -69,15 +69,14 @@ class _ConnectedDevicesState extends State<ConnectedDevices> {
     final sure = await confirmAction(
       context,
       'Revoke ${member.label}?',
-      'This phone is disconnected and can no longer listen. It can only come back with a new pairing code.',
+      'This phone is disconnected and can no longer listen. Existing pairing links stop working. Other paired phones stay connected. To pair again, use a new link or a fresh authenticator code.',
     );
     if (sure != true) return;
     final error = await widget.monitor.revokeDevice(member.uid);
     if (!mounted) return;
     if (error != null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(error)));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(error)));
     }
     await _load();
   }
@@ -152,9 +151,8 @@ class _ConnectedDevicesState extends State<ConnectedDevices> {
     );
     if (!mounted) return;
     if (error != null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(error)));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(error)));
     }
     await _load();
   }

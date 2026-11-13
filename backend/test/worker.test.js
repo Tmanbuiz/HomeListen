@@ -28,6 +28,15 @@ class MemoryStore {
     await this.put("owners/" + uid, { roomId: id }, null);
     await this.put("rooms/" + id, room, null);
   }
+  async putInvitation(id, room, invitation) {
+    const path = "rooms/" + id;
+    if (this.docs.get(path)?.version !== room.version) throw new HttpError(409, "conflict");
+    this.docs.set(path, {
+      data: { ...structuredClone(room.data), invitationEpoch: room.data.invitationEpoch ?? 0 },
+      version: String(++this.counter)
+    });
+    this.docs.set("roomInvites/" + id, { data: structuredClone(invitation), version: String(++this.counter) });
+  }
   async openSession(id, room, sid, session) {
     if (this.docs.get("rooms/" + id)?.version !== room.version) throw new HttpError(409, "conflict");
     const old = room.data.activeSessions?.[session.viewerUid];
@@ -537,6 +546,95 @@ test("revoking everyone or leaving also forgets the stored device names", async 
   assert.deepEqual(Object.keys((await s.store.get("roomMembers/" + id)).data), ["phoneA"]);
   assert.equal((await s.api("/rooms/" + id + "/revoke", "home", {})).status, 200);
   assert.equal(await s.store.get("roomMembers/" + id), null);
+});
+
+test("removing one phone invalidates old links without disconnecting other phones", async () => {
+  const s = setup(); const { id, secret } = await s.home();
+  await s.join(id, secret, "away"); await s.join(id, secret, "second");
+  await s.api(`/rooms/${id}/state`, "home", { sharing: true });
+  const session = await s.api(`/rooms/${id}/sessions`, "second");
+  const before = (await s.store.get(`rooms/${id}`)).data;
+  assert.equal(session.status, 201);
+  assert.equal((await s.api(`/rooms/${id}/revoke-member`, "home", { uid: "away" })).status, 200);
+  assert.equal((await s.join(id, secret, "away")).status, 403);
+  assert.equal((await s.join(id, secret, "stranger")).status, 403);
+  assert.equal((await s.api(`/rooms/${id}`, "away", {}, "GET")).status, 404);
+  assert.equal((await s.api(`/rooms/${id}/sessions`, "away")).status, 404);
+  assert.equal((await s.api(`/rooms/${id}`, "second", {}, "GET")).status, 200);
+  const after = (await s.store.get(`rooms/${id}`)).data;
+  assert.equal(after.generation, before.generation);
+  assert.equal(after.activeSessions.second, before.activeSessions.second);
+  assert.equal((await s.join(id, await freshInvite(s, id), "away")).status, 200);
+});
+
+test("a join already in flight cannot undo a concurrent phone removal", { timeout: 3000 }, async (t) => {
+  const s = setup(); const { id, secret } = await s.home();
+  await s.join(id, secret);
+  const entered = Promise.withResolvers(), release = Promise.withResolvers();
+  t.after(() => release.resolve());
+  const put = s.store.put.bind(s.store);
+  let intercept = true;
+  s.store.put = async (path, data, version) => {
+    if (intercept && path === `rooms/${id}` && data.members.away === true) {
+      intercept = false; entered.resolve(); await release.promise;
+    }
+    return put(path, data, version);
+  };
+  const pending = s.join(id, secret);
+  await entered.promise;
+  assert.equal((await s.api(`/rooms/${id}/revoke-member`, "home", { uid: "away" })).status, 200);
+  release.resolve();
+  assert.equal((await pending).status, 403);
+  assert.equal((await s.store.get(`rooms/${id}`)).data.members.away, undefined);
+});
+
+test("legacy invitations work until a phone is removed, then require a fresh link", async () => {
+  const s = setup(); const { id, secret } = await s.home();
+  for (const path of [`rooms/${id}`, `roomInvites/${id}`]) {
+    const doc = await s.store.get(path); delete doc.data.invitationEpoch;
+    await s.store.put(path, doc.data, doc.version);
+  }
+  assert.equal((await s.join(id, secret)).status, 200);
+  await s.api(`/rooms/${id}/revoke-member`, "home", { uid: "away" });
+  assert.equal((await s.join(id, secret)).status, 403);
+  assert.equal((await s.join(id, await freshInvite(s, id))).status, 200);
+});
+
+test("invitation creation retries a concurrent removal and returns a usable new link", async () => {
+  const s = setup(); const { id, secret } = await s.home();
+  await s.join(id, secret);
+  const putInvitation = s.store.putInvitation.bind(s.store);
+  let intercept = true;
+  s.store.putInvitation = async (...args) => {
+    if (intercept) {
+      intercept = false;
+      assert.equal((await s.api(`/rooms/${id}/revoke-member`, "home", { uid: "away" })).status, 200);
+    }
+    return putInvitation(...args);
+  };
+  const next = await s.api(`/rooms/${id}/invite`);
+  assert.equal(next.status, 200);
+  assert.equal(intercept, false);
+  assert.equal((await s.join(id, secret)).status, 403);
+  assert.equal((await s.join(id, next.body.secret)).status, 200);
+});
+
+test("invitation conflicts are bounded and do not return a stale secret", async () => {
+  const s = setup(); const { id } = await s.home();
+  let attempts = 0;
+  s.store.putInvitation = async () => { attempts++; throw new HttpError(409, "conflict"); };
+  const result = await s.api(`/rooms/${id}/invite`);
+  assert.equal(result.status, 409);
+  assert.equal(result.body.secret, undefined);
+  assert.equal(attempts, 5);
+});
+
+test("removing a phone leaves fresh authenticator pairing available", async () => {
+  const s = setup(); const { id, secret } = await protectedHome(s);
+  await s.join(id, await freshInvite(s, id));
+  await s.api(`/rooms/${id}/revoke-member`, "home", { uid: "away" });
+  s.advance(31000);
+  assert.equal((await byCode(s, QA.answer, await codeNow(s, secret))).status, 200);
 });
 
 test("guessing at the no-link way in is limited per phone and per address", async () => {

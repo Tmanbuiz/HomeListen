@@ -13,19 +13,34 @@ int defaultSoundDuration(String category) => switch (category) {
   _ => 0,
 };
 
+int defaultRecordingDuration(String category) => switch (category) {
+  'crying' => 30,
+  'coughing' => 8,
+  _ => 0,
+};
+
 /// A detector score is a model output, not a probability of danger.
 class SoundRule {
   const SoundRule({
     this.threshold = 0.4,
     this.minimumSeconds = 0,
+    int? recordingMinimumSeconds,
     this.cooldownSeconds = 30,
     this.duringQuietHours = false,
     this.recordAudio = false,
-  });
+    this.durationNeedsReview = false,
+  }) : recordingMinimumSeconds = recordingMinimumSeconds ?? minimumSeconds;
   final double threshold;
+
+  /// Home-phone push-alert duration, independent of receiver recording rules.
   final int minimumSeconds;
+  final int recordingMinimumSeconds;
   final int cooldownSeconds;
   final bool duringQuietHours;
+
+  /// Older settings cannot distinguish the former cough default from a custom
+  /// eight-second rule. Ask the owner to choose instead of changing it silently.
+  final bool durationNeedsReview;
 
   /// Save qualifying episodes only on an actively listening receiving phone.
   final bool recordAudio;
@@ -33,23 +48,32 @@ class SoundRule {
   SoundRule copyWith({
     double? threshold,
     int? minimumSeconds,
+    int? recordingMinimumSeconds,
     int? cooldownSeconds,
     bool? duringQuietHours,
     bool? recordAudio,
+    bool? durationNeedsReview,
   }) => SoundRule(
     threshold: (threshold ?? this.threshold).clamp(0.2, 0.9),
     minimumSeconds: (minimumSeconds ?? this.minimumSeconds).clamp(0, 300),
+    recordingMinimumSeconds:
+        (recordingMinimumSeconds ?? this.recordingMinimumSeconds).clamp(0, 300),
     cooldownSeconds: (cooldownSeconds ?? this.cooldownSeconds).clamp(5, 600),
     duringQuietHours: duringQuietHours ?? this.duringQuietHours,
     recordAudio: recordAudio ?? this.recordAudio,
+    durationNeedsReview:
+        durationNeedsReview ??
+        (minimumSeconds == null ? this.durationNeedsReview : false),
   );
 
   Map<String, Object> toJson() => {
     'threshold': threshold,
     'minimumSeconds': minimumSeconds,
+    'recordingMinimumSeconds': recordingMinimumSeconds,
     'cooldownSeconds': cooldownSeconds,
     'duringQuietHours': duringQuietHours,
     'recordAudio': recordAudio,
+    'durationNeedsReview': durationNeedsReview,
   };
 
   static SoundRule fromJson(Map row, SoundRule fallback) => fallback.copyWith(
@@ -57,6 +81,9 @@ class SoundRule {
         ? (row['threshold'] as num).toDouble()
         : null,
     minimumSeconds: row['minimumSeconds'] is int ? row['minimumSeconds'] : null,
+    recordingMinimumSeconds: row['recordingMinimumSeconds'] is int
+        ? row['recordingMinimumSeconds']
+        : null,
     cooldownSeconds: row['cooldownSeconds'] is int
         ? row['cooldownSeconds']
         : null,
@@ -64,6 +91,7 @@ class SoundRule {
         ? row['duringQuietHours']
         : null,
     recordAudio: row['recordAudio'] is bool ? row['recordAudio'] : null,
+    durationNeedsReview: row['durationNeedsReview'] == true,
   );
 }
 
@@ -78,7 +106,10 @@ class GuardianSettings {
          for (final name in guardianCategories)
            name:
                rules?[name] ??
-               SoundRule(minimumSeconds: defaultSoundDuration(name)),
+               SoundRule(
+                 minimumSeconds: defaultSoundDuration(name),
+                 recordingMinimumSeconds: defaultRecordingDuration(name),
+               ),
        };
 
   final bool quietEnabled;
@@ -116,7 +147,7 @@ class GuardianSettings {
   );
 
   String encode() => jsonEncode({
-    'version': 2,
+    'version': 3,
     'quietEnabled': quietEnabled,
     'quietStart': quietStart,
     'quietEnd': quietEnd,
@@ -131,6 +162,7 @@ class GuardianSettings {
           name: SoundRule(
             threshold: threshold.clamp(0.2, 0.9),
             minimumSeconds: defaultSoundDuration(name),
+            recordingMinimumSeconds: defaultRecordingDuration(name),
           ),
       },
     );
@@ -140,15 +172,28 @@ class GuardianSettings {
       final stored = row['rules'];
       // Version 1 used a one-second crying default. Upgrade that default while
       // retaining custom timings, including an explicit immediate alert.
-      final legacy = row['version'] != 2;
+      final version = row['version'] is int ? row['version'] as int : 1;
       SoundRule restoreRule(String name) {
         if (stored is! Map || stored[name] is! Map) {
           return fallback.rules[name]!;
         }
-        final rule = SoundRule.fromJson(stored[name], fallback.rules[name]!);
-        return legacy && name == 'crying' && rule.minimumSeconds == 1
-            ? rule.copyWith(minimumSeconds: 30)
-            : rule;
+        var rule = SoundRule.fromJson(stored[name], fallback.rules[name]!);
+        if (version < 2 && name == 'crying' && rule.minimumSeconds == 1) {
+          rule = rule.copyWith(minimumSeconds: 30);
+        }
+        if (version < 3) {
+          rule = rule.copyWith(
+            // Keep opted-in recordings and custom durations, even if recording
+            // is currently unchecked. Unselected defaults match the web viewer.
+            recordingMinimumSeconds:
+                rule.recordAudio ||
+                    rule.minimumSeconds != defaultSoundDuration(name)
+                ? rule.minimumSeconds
+                : defaultRecordingDuration(name),
+            durationNeedsReview: name == 'coughing' && rule.minimumSeconds == 8,
+          );
+        }
+        return rule;
       }
 
       return fallback.copyWith(
