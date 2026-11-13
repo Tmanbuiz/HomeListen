@@ -31,6 +31,7 @@ class SoundRule {
     this.durationNeedsReview = false,
   }) : recordingMinimumSeconds = recordingMinimumSeconds ?? minimumSeconds;
   final double threshold;
+
   /// Home-phone push-alert duration, independent of receiver recording rules.
   final int minimumSeconds;
   final int recordingMinimumSeconds;
@@ -189,8 +190,7 @@ class GuardianSettings {
                     rule.minimumSeconds != defaultSoundDuration(name)
                 ? rule.minimumSeconds
                 : defaultRecordingDuration(name),
-            durationNeedsReview:
-                name == 'coughing' && rule.minimumSeconds == 8,
+            durationNeedsReview: name == 'coughing' && rule.minimumSeconds == 8,
           );
         }
         return rule;

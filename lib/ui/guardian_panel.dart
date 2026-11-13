@@ -413,9 +413,8 @@ class SpeechSessionsCard extends StatelessWidget {
                   }
                   final error = await monitor.openSpeechSession();
                   if (error != null && context.mounted) {
-                    ScaffoldMessenger.of(
-                      context,
-                    ).showSnackBar(SnackBar(content: Text(error)));
+                    ScaffoldMessenger.of(context)
+                        .showSnackBar(SnackBar(content: Text(error)));
                   }
                 },
           icon: const Icon(Icons.open_in_new),

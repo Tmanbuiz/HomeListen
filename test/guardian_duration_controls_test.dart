@@ -99,26 +99,27 @@ void main() {
     );
   });
 
-  testWidgets('receiver duration controls change recordings without alert rules', (
-    tester,
-  ) async {
-    final monitor = await mount(tester, {'device_role': 'away'});
-    await tester.tap(find.text('Coughing'));
-    await tester.pumpAndSettle();
-    final tile = find.ancestor(
-      of: find.text('Coughing'),
-      matching: find.byType(ExpansionTile),
-    );
-    final duration = find.descendant(
-      of: tile,
-      matching: find.widgetWithText(ChoiceChip, '15s'),
-    );
-    await tester.ensureVisible(duration);
-    await tester.tap(duration);
-    await tester.pumpAndSettle();
-    final cough = monitor.guardianSettings.rules['coughing']!;
-    expect(cough.minimumSeconds, 0);
-    expect(cough.recordingMinimumSeconds, 15);
-    expect(cough.recordAudio, isFalse);
-  });
+  testWidgets(
+    'receiver duration controls change recordings without alert rules',
+    (tester) async {
+      final monitor = await mount(tester, {'device_role': 'away'});
+      await tester.tap(find.text('Coughing'));
+      await tester.pumpAndSettle();
+      final tile = find.ancestor(
+        of: find.text('Coughing'),
+        matching: find.byType(ExpansionTile),
+      );
+      final duration = find.descendant(
+        of: tile,
+        matching: find.widgetWithText(ChoiceChip, '15s'),
+      );
+      await tester.ensureVisible(duration);
+      await tester.tap(duration);
+      await tester.pumpAndSettle();
+      final cough = monitor.guardianSettings.rules['coughing']!;
+      expect(cough.minimumSeconds, 0);
+      expect(cough.recordingMinimumSeconds, 15);
+      expect(cough.recordAudio, isFalse);
+    },
+  );
 }

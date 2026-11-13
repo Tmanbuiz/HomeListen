@@ -75,9 +75,8 @@ class _ConnectedDevicesState extends State<ConnectedDevices> {
     final error = await widget.monitor.revokeDevice(member.uid);
     if (!mounted) return;
     if (error != null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(error)));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(error)));
     }
     await _load();
   }
@@ -152,9 +151,8 @@ class _ConnectedDevicesState extends State<ConnectedDevices> {
     );
     if (!mounted) return;
     if (error != null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(error)));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(error)));
     }
     await _load();
   }
