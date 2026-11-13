@@ -109,6 +109,7 @@ class _RecordingsCardState extends State<RecordingsCard> {
         Text(clip.name, style: const TextStyle(fontWeight: FontWeight.w600)),
         const SizedBox(height: 4),
         Text(
+          '${clip.room == null ? '' : '${clip.room} · '}'
           '${HomeMonitor.soundCategoryLabel(clip.category)} · '
           '${_duration(clip.durationMs)} · ${_time(context, clip.startedAt)}',
           style: const TextStyle(fontSize: 12),
@@ -124,9 +125,8 @@ class _RecordingsCardState extends State<RecordingsCard> {
                         clip,
                       );
                       if (!context.mounted) return;
-                      ScaffoldMessenger.of(
-                        context,
-                      ).showSnackBar(SnackBar(content: Text(message)));
+                      ScaffoldMessenger.of(context)
+                          .showSnackBar(SnackBar(content: Text(message)));
                     }),
               icon: const Icon(Icons.ios_share_outlined),
               label: const Text('Save / share audio'),
@@ -171,7 +171,30 @@ class _RecordingsCardState extends State<RecordingsCard> {
             ),
             const SizedBox(height: 10),
             const Text(
-              'Tick “Record this alert on this phone” in sound rules, then keep live listening connected. Audio is saved only on this receiving device, never uploaded to HomeListen or saved on the home phone.',
+              'Record the selected room on this device, or tick “Record this alert on this phone” in sound rules for automatic clips. Audio is saved only on this receiving device. Switching rooms finishes the current recording.',
+            ),
+            const SizedBox(height: 10),
+            FilledButton.icon(
+              key: const ValueKey('record-to-device'),
+              onPressed:
+                  _busy ||
+                      (!monitor.deviceRecording && !monitor.canRecordDevice)
+                  ? null
+                  : () => _action(
+                      monitor.deviceRecording
+                          ? monitor.stopDeviceRecording
+                          : monitor.startDeviceRecording,
+                    ),
+              icon: Icon(
+                monitor.deviceRecording
+                    ? Icons.stop_circle_outlined
+                    : Icons.fiber_manual_record,
+              ),
+              label: Text(
+                monitor.deviceRecording
+                    ? 'Stop and save recording'
+                    : 'Record room to this device',
+              ),
             ),
             if (monitor.recordingAudio || monitor.bufferingRecording) ...[
               const SizedBox(height: 10),
@@ -190,7 +213,9 @@ class _RecordingsCardState extends State<RecordingsCard> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      monitor.recordingAudio
+                      monitor.deviceRecording
+                          ? 'Recording this room on this device. Tap Stop and save recording when finished.'
+                          : monitor.recordingAudio
                           ? 'Recording the detected sound. The clip appears here when the episode ends.'
                           : 'Buffering an opted-in sound until it reaches the alert duration. Short episodes are discarded.',
                     ),

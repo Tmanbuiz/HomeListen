@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 import { IDBFactory } from 'fake-indexeddb';
-import { loadAll, MAX_EVENTS } from '../src/history.js';
+import { loadAll, MAX_EVENTS, saveEvent } from '../src/history.js';
 
 const DAY = 86_400_000;
 function open(indexedDB) {
@@ -66,7 +66,7 @@ test('background push prunes stored history even with no open browser page', asy
   await done;
   const rows = await stored(database);
   assert.equal(rows.length, MAX_EVENTS);
-  assert.equal(rows.some(e => e.id === 'background'), true);
+  assert.equal(rows.some(e => e.sourceId === 'background'), true);
   assert.equal(rows.some(e => ['expired', 'future', 'recent-649'].includes(e.id)), false);
   assert.equal(notifications.length, 1);
   done = null;
@@ -74,4 +74,15 @@ test('background push prunes stored history even with no open browser page', asy
     waitUntil: (work) => { done = work; } });
   assert.equal(done, null);
   assert.equal(notifications.length, 1);
+});
+
+test('alerts with the same source event ID stay separate across rooms', async () => {
+  const previous = globalThis.indexedDB; globalThis.indexedDB = new IDBFactory();
+  try {
+    const data = { id: 'shared_id', title: 'Possible crying', sentAt: Date.now() };
+    await saveEvent({ ...data, roomId: 'room_a', room: 'Bedroom' });
+    await saveEvent({ ...data, roomId: 'room_b', room: 'Children room' });
+    const rows = await loadAll(); assert.equal(rows.length, 2);
+    assert.deepEqual(new Set(rows.map(row => row.roomId)), new Set(['room_a', 'room_b']));
+  } finally { globalThis.indexedDB = previous; }
 });

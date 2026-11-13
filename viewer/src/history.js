@@ -14,9 +14,10 @@ export function trim(list, now = Date.now()) {
   const seen = new Set();
   const out = [];
   for (const event of [...list].sort((a, b) => b.sentAt - a.sentAt)) {
-    if (!event?.id || seen.has(event.id) || !Number.isFinite(event.sentAt) ||
+    const identity = `${event?.roomId ?? ""}|${event?.sourceId ?? event?.id}`;
+    if (!event?.id || seen.has(identity) || !Number.isFinite(event.sentAt) ||
         event.sentAt > now + 30_000 || !(event.sentAt >= cutoff)) continue;
-    seen.add(event.id);
+    seen.add(identity);
     out.push(event);
     if (out.length >= MAX_EVENTS) break;
   }
@@ -57,7 +58,7 @@ export function exportJson(list, now = Date.now()) {
   return JSON.stringify({
     exportedAt: new Date(now).toISOString(),
     note: "Alert metadata only. No audio is stored or exported.",
-    events: list.map(({ id, title, room, kind, sentAt }) => ({ id, title, room, kind, at: new Date(sentAt).toISOString() }))
+    events: list.map(({ id, sourceId, roomId, title, room, kind, sentAt }) => ({ id: sourceId ?? id, title, room, kind, at: new Date(sentAt).toISOString(), ...(roomId ? { roomId } : {}) }))
   }, null, 2);
 }
 
@@ -100,9 +101,10 @@ export async function loadAll() {
 export async function saveEvent(event) {
   if (!event?.id) return;
   try {
+    const roomId = String(event.roomId ?? ""), sourceId = String(event.sourceId ?? event.id);
     await run("readwrite", (store) => store.put({
-      id: String(event.id), title: String(event.title ?? "").slice(0, 80), room: String(event.room ?? "Home").slice(0, 32),
-      roomId: String(event.roomId ?? ""), kind: String(event.kind ?? ""), sentAt: Number(event.sentAt) || Date.now()
+      id: roomId ? `${roomId}|${sourceId}` : sourceId, sourceId, title: String(event.title ?? "").slice(0, 80), room: String(event.room ?? "Home").slice(0, 32),
+      roomId, kind: String(event.kind ?? ""), sentAt: Number(event.sentAt) || Date.now()
     }));
     await loadAll();
   } catch { /* history is a convenience; alerts still show */ }

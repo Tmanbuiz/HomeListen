@@ -31,6 +31,12 @@ jobs:
         working-directory: backend
       - run: npm run check && npm test && npm run build
         working-directory: viewer
+      - name: Install browser for room switching tests
+        run: npx playwright install --with-deps chromium
+        working-directory: viewer
+      - name: Check multi-room browser controls and local recording
+        run: npm run test:browser
+        working-directory: viewer
       - run: npm run test:rules
       - uses: actions/setup-python@v5
         with:

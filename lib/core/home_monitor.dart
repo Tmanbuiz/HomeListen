@@ -24,6 +24,7 @@ import 'cloud_connection.dart';
 import 'cloud_pairing.dart';
 import 'pairing.dart';
 import 'sound_watch.dart';
+import 'saved_rooms.dart';
 
 enum MonitorRole { idle, talking, listening, watching, guardian }
 
@@ -107,6 +108,15 @@ class HomeMonitor extends ChangeNotifier {
     _connectionMode = prefs?.getString('connection_mode') == 'cloud'
         ? ConnectionMode.cloud
         : ConnectionMode.tailscale;
+    _savedRoomRecords = SavedCloudRoom.restore(
+      prefs?.getString('cloud_saved_rooms_v1'),
+      legacyRoomId: prefs?.getString('cloud_paired_room'),
+      legacyOrigin: prefs?.getString('cloud_server'),
+      legacyAlerts:
+          prefs?.getBool('cloud_alerts_enabled') == true ||
+          _autoMode == 'alerts',
+      legacyListen: _autoMode != 'alerts',
+    );
     final selected = prefs?.getStringList('sound_categories');
     if (selected != null) {
       soundWatch.categories
@@ -114,6 +124,8 @@ class HomeMonitor extends ChangeNotifier {
         ..addAll(selected);
     }
     _recordings = EpisodeRecordings(
+      roomId: () => cloudMode ? _cloud?.roomId : null,
+      room: () => displayRoom,
       directory: () async {
         final path = await _channel.invokeMethod<String>('recordingsDirectory');
         if (path == null || path.isEmpty) {
@@ -121,7 +133,10 @@ class HomeMonitor extends ChangeNotifier {
         }
         return Directory(path);
       },
-      onChanged: _notify,
+      onChanged: () {
+        _syncRecordingRequest();
+        _notify();
+      },
       onError: (message) {
         _recordingProblem = message;
         _notify();
@@ -242,9 +257,61 @@ class HomeMonitor extends ChangeNotifier {
         (name) => _guardianSettings.rules[name]?.recordAudio == true,
       );
   bool get recordingArmed => _deviceRole == DeviceRole.away && _recordingOptIn;
-  bool get _canRecord => recordingArmed && isListening;
+  bool get deviceRecording => _recordings.manualArmed;
+  bool get canRecordDevice =>
+      _deviceRole == DeviceRole.away &&
+      isListening &&
+      (cloudMode
+          ? _cloud?.hearing == true &&
+                _cloud?.online == true &&
+                _cloud?.liveAvailable == true
+          : _listener?.isHearing == true);
+  bool get _canRecord =>
+      canRecordDevice && (_recordingOptIn || deviceRecording);
+
+  void _syncRecordingRequest() {
+    if (_disposed) return;
+    final enabled =
+        _deviceRole == DeviceRole.away &&
+        isListening &&
+        (_recordingOptIn || deviceRecording);
+    if (cloudMultiRoom) {
+      _roomCoordinator?.requestRecording(enabled);
+    } else {
+      _cloud?.requestRecordingAudio(enabled);
+    }
+  }
+
+  Future<void> startDeviceRecording() async {
+    if (!canRecordDevice || _switchingCloudRoom) {
+      throw StateError(
+        'Connect live audio from the selected room before recording.',
+      );
+    }
+    _recordingProblem = null;
+    _lastRecordingVerdict = null;
+    await _recordings.startManual();
+    if (!canRecordDevice || _switchingCloudRoom || _disposed) {
+      await _recordings.stop();
+      throw StateError('The room connection changed before recording started.');
+    }
+    _syncRecordingRequest();
+    _notify();
+  }
+
+  Future<void> stopDeviceRecording() async {
+    await _recordings.stopManual();
+    _lastRecordingVerdict = null;
+    _syncRecordingRequest();
+    _notify();
+  }
 
   String get recordingStatus {
+    if (deviceRecording) {
+      return _recordings.manualRecording
+          ? 'Recording $displayRoom to this device. Tap Stop recording to save.'
+          : 'Recording armed for $displayRoom. Waiting for incoming room audio.';
+    }
     if (!recordingArmed) {
       return 'Recording is off. Select a sound and tick its recording checkbox.';
     }
@@ -279,7 +346,7 @@ class HomeMonitor extends ChangeNotifier {
     try {
       final saved = await _channel.invokeMethod<bool>('exportRecording', {
         'path': clip.path,
-        'name': clip.name,
+        'name': clip.exportName,
       });
       return saved == true ? 'Audio exported.' : 'Export cancelled.';
     } catch (_) {
@@ -288,7 +355,7 @@ class HomeMonitor extends ChangeNotifier {
   }
 
   void _observeRecording(String? category, DateTime at) {
-    if (!_canRecord) return;
+    if (!_canRecord || _switchingCloudRoom || deviceRecording) return;
     final firstVerdict = _lastRecordingVerdict == null;
     _lastRecordingVerdict = DateTime.now();
     if (firstVerdict) _notify();
@@ -305,7 +372,7 @@ class HomeMonitor extends ChangeNotifier {
   }
 
   void _feedRecording(Int16List pcm) {
-    if (!_canRecord) return;
+    if (!_canRecord || _switchingCloudRoom) return;
     final firstPcm = _lastRecordingPcm == null;
     _lastRecordingPcm = DateTime.now();
     if (firstPcm) _notify();
@@ -316,13 +383,15 @@ class HomeMonitor extends ChangeNotifier {
       if (!_canRecord ||
           pcmAt == null ||
           now.difference(pcmAt) > const Duration(seconds: 1) ||
-          (verdictAt != null &&
+          (!deviceRecording &&
+              verdictAt != null &&
               now.difference(verdictAt) > const Duration(seconds: 3))) {
         _interruptRecording();
       }
     });
     final last = _lastRecordingVerdict;
-    if (last != null &&
+    if (!deviceRecording &&
+        last != null &&
         DateTime.now().difference(last) > const Duration(seconds: 3)) {
       unawaited(_recordings.stop());
       return;
@@ -335,7 +404,7 @@ class HomeMonitor extends ChangeNotifier {
     _recordingWatchdog = null;
     _lastRecordingPcm = null;
     _lastRecordingVerdict = null;
-    unawaited(_recordings.stop());
+    unawaited(_recordings.stop().whenComplete(_syncRecordingRequest));
   }
 
   GuardianSettings _guardianSettings = GuardianSettings();
@@ -361,18 +430,267 @@ class HomeMonitor extends ChangeNotifier {
   MicListener? _listener;
   MicListener? _pendingListener;
   CloudConnection? _cloud;
+  SavedRoomCoordinator? _roomCoordinator;
+  List<SavedCloudRoom> _savedRoomRecords = [];
+  bool _switchingCloudRoom = false;
   ConnectionMode _connectionMode = ConnectionMode.tailscale;
   ConnectionMode get connectionMode => _connectionMode;
   bool get cloudMode => _connectionMode == ConnectionMode.cloud;
+  bool get cloudMultiRoom => cloudMode && _deviceRole == DeviceRole.away;
+  List<SavedCloudRoom> get savedCloudRooms =>
+      _roomCoordinator?.rooms ??
+      _savedRoomRecords.where((r) => r.origin == cloudServer).toList();
+  String? get selectedCloudRoomId =>
+      _roomCoordinator?.selectedRoomId ?? prefs?.getString('cloud_paired_room');
+  int get connectedCloudRoomCount => _roomCoordinator?.connectedCount ?? 0;
+  String cloudRoomStatus(String roomId) =>
+      _roomCoordinator?.status(roomId) ?? 'Not connected';
   String get cloudServer => prefs?.getString('cloud_server') ?? '';
   bool get hasPairing => cloudMode
-      ? (_cloud?.paired ?? prefs?.getString('cloud_paired_room') != null)
+      ? (cloudMultiRoom
+            ? savedCloudRooms.isNotEmpty
+            : (_cloud?.paired ?? prefs?.getString('cloud_paired_room') != null))
       : _paired != null;
   String get pairedAddress =>
       cloudMode ? cloudServer : (_paired?.host ?? 'Not paired');
   String? get pairingCode =>
       cloudMode ? _cloud?.inviteCode : ownPairing?.toCode();
   int get pairedPhoneCount => (_cloud?.room?['members'] as Map?)?.length ?? 0;
+
+  SavedRoomCoordinator _cloudRooms() {
+    if (prefs == null || cloudServer.isEmpty) {
+      throw StateError('Configure your Home Listen cloud server first.');
+    }
+    final origin = cloudServer;
+    return _roomCoordinator ??= SavedRoomCoordinator(
+      rooms: _savedRoomRecords.where((room) => room.origin == origin),
+      selectedRoomId: prefs!.getString('cloud_paired_room'),
+      create: (room, changed, problem) => _newRoomConnection(
+        room.roomId,
+        onChanged: changed,
+        onProblem: problem,
+      ),
+      persist: (rooms, selected) async {
+        _savedRoomRecords = [
+          ..._savedRoomRecords.where((room) => room.origin != origin),
+          ...rooms,
+        ];
+        await prefs!.setString(
+          'cloud_saved_rooms_v1',
+          SavedCloudRoom.encode(_savedRoomRecords),
+        );
+        if (selected == null) {
+          await prefs!.remove('cloud_paired_room');
+        } else {
+          await prefs!.setString('cloud_paired_room', selected);
+        }
+        await prefs!.setBool(
+          'cloud_alerts_enabled',
+          rooms.any((room) => room.roomId == selected && room.alerts),
+        );
+      },
+      beforeSelectionChange: _finishSelectedRecording,
+      onChanged: _cloudRoomsChanged,
+    );
+  }
+
+  CloudConnection _newRoomConnection(
+    String? roomId, {
+    void Function()? onChanged,
+    void Function(String)? onProblem,
+  }) {
+    late CloudConnection connection;
+    connection = CloudConnection(
+      origin: cloudServer,
+      prefs: prefs!,
+      home: false,
+      managed: true,
+      managedRoomId: roomId,
+      onOpenRoom: (id) {
+        if (!_disposed) unawaited(selectCloudRoom(id));
+      },
+      onPcm: (_) {},
+      onRecordingPcm: (pcm) {
+        if (_cloud == connection) _feedRecording(pcm);
+      },
+      onRecordingVerdict: (category, at, score) {
+        if (_cloud == connection) _observeRecording(category, at);
+      },
+      onRecordingInterrupted: () {
+        if (_cloud == connection) _interruptRecording();
+      },
+      onLevel: (level) {
+        if (_cloud == connection) _onCloudLevel(level);
+      },
+      onAlert: (alert) =>
+          _onRemoteAlert({...alert, 'origin': connection.origin}),
+      onProblem: (problem) {
+        if (onProblem != null) {
+          onProblem(problem);
+        } else {
+          _roomCoordinator?.reportProblem(connection.roomId, problem);
+        }
+      },
+      onChanged: () {
+        if (onChanged != null) {
+          onChanged();
+        } else {
+          _roomCoordinator?.refreshRoom(connection.roomId);
+        }
+      },
+    );
+    return connection;
+  }
+
+  Future<void> _finishSelectedRecording() async {
+    _switchingCloudRoom = true;
+    _cloud?.requestRecordingAudio(false);
+    _interruptRecording();
+    try {
+      await _recordings.stop();
+      _remoteStatusAt = null;
+      _remoteRoom = null;
+      _levels.fillRange(0, _levels.length, 0.03);
+    } finally {
+      _switchingCloudRoom = false;
+    }
+  }
+
+  void _cloudRoomsChanged() {
+    if (_disposed || !cloudMultiRoom) return;
+    final pool = _roomCoordinator;
+    _cloud = pool?.selected as CloudConnection?;
+    final cloud = _cloud;
+    if (cloud?.hearing != true ||
+        cloud?.online != true ||
+        cloud?.liveAvailable != true) {
+      if (deviceRecording || recordingAudio || bufferingRecording)
+        _interruptRecording();
+    }
+    if (cloud?.online == true) {
+      _readStatus({
+        'room': cloud?.room?['roomName'],
+        'battery': cloud?.room?['battery'],
+        'charging': cloud?.room?['charging'],
+      });
+    } else {
+      _remoteStatusAt = null;
+      _remoteRoom = savedCloudRooms
+          .where((r) => r.roomId == selectedCloudRoomId)
+          .firstOrNull
+          ?.displayName;
+    }
+    if (pool?.rooms.isEmpty == true && isListening && Platform.isAndroid) {
+      unawaited(_stopEmptyRoomNotice(pool!));
+    }
+    if (pool?.running == true) {
+      _role = MonitorRole.listening;
+    } else if (isListening || isWatching) {
+      _role = MonitorRole.idle;
+    }
+    _notify();
+  }
+
+  Future<void> _stopEmptyRoomNotice(SavedRoomCoordinator pool) async {
+    // A per-room logout never tears down playback for another saved room.
+    if (_roomCoordinator != pool || pool.rooms.isNotEmpty) return;
+    try {
+      await _channel.invokeMethod<void>('stop');
+    } catch (_) {}
+  }
+
+  Future<void> selectCloudRoom(String roomId) async {
+    if (!cloudMultiRoom) return;
+    await _cloudRooms().select(roomId);
+    _cloudRoomsChanged();
+  }
+
+  Future<void> logoutCloudRoom(String roomId) async {
+    if (!cloudMultiRoom) return;
+    try {
+      await _cloudRooms().logout(roomId);
+      _error = null;
+    } catch (error) {
+      _error = 'This room was not logged out. ${_readableError(error)}';
+    }
+    _cloudRoomsChanged();
+  }
+
+  Future<void> _rememberCloudRoom(CloudConnection connection) async {
+    final id = connection.roomId;
+    if (id == null) throw StateError('The home phone did not confirm pairing.');
+    final name = connection.room?['roomName'];
+    final pool = _cloudRooms();
+    await pool.add(
+      SavedCloudRoom(
+        roomId: id,
+        origin: connection.origin,
+        name: name is String && name.isNotEmpty ? name : 'Home phone',
+      ),
+      session: connection,
+    );
+    pool.setVolume(_volume);
+    pool.requestRecording(_recordingOptIn || deviceRecording);
+    _cloudRoomsChanged();
+  }
+
+  Future<void> _startCloudRooms({
+    bool quiet = false,
+    bool restorePreferences = false,
+  }) async {
+    if (_busy || _disposed || !hasPairing) return;
+    final pool = _cloudRooms();
+    if (pool.running) return;
+    _busy = true;
+    final epoch = ++_epoch;
+    _suppressAuto = false;
+    _wantListening = true;
+    if (!quiet) _error = null;
+    _notify();
+    try {
+      await pool.initialize();
+      if (epoch != _epoch || _disposed) return;
+      if (Platform.isAndroid) {
+        final shown = await _channel.invokeMethod<bool>('startPlayback', {
+          'text': 'Home Listen rooms connected — tap to choose or stop',
+        });
+        if (shown != true)
+          throw StateError(
+            'Allow notifications to keep listening with the screen locked.',
+          );
+      }
+      if (epoch != _epoch || _disposed) {
+        if (Platform.isAndroid && !_wantListening && !isActive) {
+          await _channel.invokeMethod<void>('stop');
+        }
+        return;
+      }
+      pool.setVolume(_volume);
+      pool.requestRecording(_recordingOptIn || deviceRecording);
+      await pool.start(restorePreferences: restorePreferences);
+      if (epoch != _epoch || _disposed) {
+        await pool.stop();
+        return;
+      }
+      _role = MonitorRole.listening;
+      _sessionStarted = DateTime.now();
+      _error = null;
+      _cloudRoomsChanged();
+      _addEvent(ActivityKind.connected, 'Saved room connections enabled');
+    } catch (error) {
+      await pool.stop();
+      if (epoch == _epoch && !_disposed) _error = _readableError(error);
+      if (Platform.isAndroid) {
+        try {
+          await _channel.invokeMethod<void>('stop');
+        } catch (_) {}
+      }
+    } finally {
+      _busy = false;
+      _notify();
+    }
+  }
+
   Future<void> configureConnection(ConnectionMode mode, String server) async {
     final origin = mode == ConnectionMode.cloud
         ? CloudPairing.serverOrigin(server)
@@ -390,6 +708,8 @@ class HomeMonitor extends ChangeNotifier {
       _outbox.clear();
       await _saveOutbox();
     }
+    await _roomCoordinator?.close();
+    _roomCoordinator = null;
     await _cloud?.close();
     _cloud = null;
     _connectionMode = mode;
@@ -399,7 +719,12 @@ class HomeMonitor extends ChangeNotifier {
     _notify();
     if (cloudMode) {
       try {
-        await _cloudConnection().ensureReady();
+        if (cloudMultiRoom) {
+          await _cloudRooms().initialize();
+          _cloudRoomsChanged();
+        } else {
+          await _cloudConnection().ensureReady();
+        }
       } catch (e) {
         _error = _readableError(e);
         _notify();
@@ -412,6 +737,15 @@ class HomeMonitor extends ChangeNotifier {
       throw StateError(
         'Open Settings → Connection and enter your cloud server address.',
       );
+    }
+    if (cloudMultiRoom) {
+      final selected = _cloudRooms().selected;
+      if (selected != null) {
+        _cloud = selected as CloudConnection;
+        _roomCoordinator?.requestRecording(_recordingOptIn || deviceRecording);
+        return _cloud!;
+      }
+      return _cloud ??= _newRoomConnection(null);
     }
     final cloud = _cloud ??= CloudConnection(
       origin: cloudServer,
@@ -437,6 +771,10 @@ class HomeMonitor extends ChangeNotifier {
   }
 
   void _cloudChanged() {
+    if (cloudMultiRoom) {
+      _cloudRoomsChanged();
+      return;
+    }
     final cloud = _cloud;
     if (cloud == null || _disposed) return;
     if (_deviceRole == DeviceRole.home) {
@@ -585,6 +923,7 @@ class HomeMonitor extends ChangeNotifier {
     'barking' => 'Dog sounds',
     'knocking' => 'Knocks and doorbells',
     'loud sound' => 'Loud sounds',
+    'manual' => 'Room recording',
     _ => name,
   };
   bool get isListening => _role == MonitorRole.listening;
@@ -816,10 +1155,13 @@ class HomeMonitor extends ChangeNotifier {
     await _refreshHealth();
     if (cloudMode && cloudServer.isNotEmpty) {
       unawaited(
-        _cloudConnection().ensureReady().catchError((Object e) {
-          _error = _readableError(e);
-          _notify();
-        }),
+        (cloudMultiRoom
+                ? _cloudRooms().initialize()
+                : _cloudConnection().ensureReady())
+            .catchError((Object e) {
+              _error = _readableError(e);
+              _notify();
+            }),
       );
     }
     _watch = Timer.periodic(autoConnectEvery, (_) => _watchTailscale());
@@ -853,6 +1195,9 @@ class HomeMonitor extends ChangeNotifier {
   Future<void> selectDeviceRole(DeviceRole value) async {
     if (_deviceRole != value && (isActive || _busy)) await stop();
     if (_deviceRole != value) {
+      _epoch++;
+      await _roomCoordinator?.close();
+      _roomCoordinator = null;
       await _cloud?.close();
       _cloud = null;
     }
@@ -907,10 +1252,33 @@ class HomeMonitor extends ChangeNotifier {
   /// code, with no pairing link.
   Future<bool> pairWithCode(String answer, String code) async {
     try {
-      if (isActive || _busy) await stop();
+      if (_deviceRole != DeviceRole.away) {
+        throw StateError(
+          'Choose the listening-phone role before adding a room.',
+        );
+      }
+      if (CloudPairing.serverOrigin(cloudServer) == null) {
+        throw StateError(
+          'Configure your Home Listen cloud server before joining with a code.',
+        );
+      }
+      if (!cloudMultiRoom && (isActive || _busy)) await stop();
       _connectionMode = ConnectionMode.cloud;
       await prefs?.setString('connection_mode', 'cloud');
-      await _cloudConnection().joinWithCode(answer, code);
+      final connection = _newRoomConnection(null);
+      final epoch = _epoch, origin = cloudServer;
+      try {
+        await connection.joinWithCode(answer, code);
+        if (!_pairingCurrent(epoch, origin)) {
+          await connection.close();
+          return false;
+        }
+        await _rememberCloudRoom(connection);
+      } catch (_) {
+        await connection.close();
+        rethrow;
+      }
+      if (!_pairingCurrent(epoch, origin)) return false;
       _suppressAuto = false;
       _error = null;
       _notify();
@@ -926,13 +1294,41 @@ class HomeMonitor extends ChangeNotifier {
     final invite = CloudPairing.parse(code);
     if (invite != null) {
       try {
-        if (isActive || _busy) await stop();
+        if (_deviceRole != DeviceRole.away) {
+          throw StateError(
+            'Choose the listening-phone role before adding a room.',
+          );
+        }
+        if (cloudServer.isNotEmpty && invite.origin != cloudServer) {
+          throw StateError(
+            'Use a pairing link from your configured cloud server.',
+          );
+        }
+        if (!cloudMultiRoom && (isActive || _busy)) await stop();
         if (cloudServer.isEmpty) {
           await prefs?.setString('cloud_server', invite.origin);
         }
         _connectionMode = ConnectionMode.cloud;
         await prefs?.setString('connection_mode', 'cloud');
-        await _cloudConnection().join(invite);
+        if (invite.origin != cloudServer) {
+          throw StateError(
+            'Use a pairing link from your configured cloud server.',
+          );
+        }
+        final connection = _newRoomConnection(null);
+        final epoch = _epoch, origin = cloudServer;
+        try {
+          await connection.join(invite);
+          if (!_pairingCurrent(epoch, origin)) {
+            await connection.close();
+            return false;
+          }
+          await _rememberCloudRoom(connection);
+        } catch (_) {
+          await connection.close();
+          rethrow;
+        }
+        if (!_pairingCurrent(epoch, origin)) return false;
         _suppressAuto = false;
         _error = null;
         _notify();
@@ -967,6 +1363,13 @@ class HomeMonitor extends ChangeNotifier {
       return false;
     }
   }
+
+  bool _pairingCurrent(int epoch, String origin) =>
+      !_disposed &&
+      epoch == _epoch &&
+      _deviceRole == DeviceRole.away &&
+      cloudMode &&
+      cloudServer == origin;
 
   /// Authenticator setup on the home phone. Each returns null on success, or a
   /// sentence for the person on failure, so the dialog can show it in place.
@@ -1040,6 +1443,11 @@ class HomeMonitor extends ChangeNotifier {
 
   Future<void> forgetPairing() async {
     if (cloudMode) {
+      if (cloudMultiRoom) {
+        final selected = selectedCloudRoomId;
+        if (selected != null) await logoutCloudRoom(selected);
+        return;
+      }
       try {
         await stop();
         await _cloudConnection().forget();
@@ -1073,6 +1481,22 @@ class HomeMonitor extends ChangeNotifier {
     _watching = true;
     try {
       if (cloudMode) {
+        if (cloudMultiRoom && cloudServer.isNotEmpty) {
+          final pool = _cloudRooms();
+          await pool.initialize();
+          if (!needsSetup &&
+              (_autoConnect || _wantListening) &&
+              !_suppressAuto &&
+              !_busy &&
+              !pool.running &&
+              pool.rooms.any((room) => room.listen || room.alerts)) {
+            await _startCloudRooms(quiet: true, restorePreferences: true);
+          } else {
+            await pool.tick();
+          }
+          _cloudRoomsChanged();
+          return;
+        }
         final cloud = _cloud;
         if (!needsSetup &&
             _deviceRole == DeviceRole.away &&
@@ -1484,11 +1908,9 @@ class HomeMonitor extends ChangeNotifier {
       _recordingPaused = false;
       await prefs?.setBool('recording_paused', false);
     }
-    await _recordings.stop();
+    if (!deviceRecording) await _recordings.stop();
     _lastRecordingVerdict = null;
-    _cloud?.requestRecordingAudio(
-      _deviceRole == DeviceRole.away && _recordingOptIn,
-    );
+    _syncRecordingRequest();
     if (_recordingOptIn && _deviceRole == DeviceRole.away && !cloudMode) {
       await setSoundEnabled(true);
     }
@@ -1538,15 +1960,14 @@ class HomeMonitor extends ChangeNotifier {
       final incoming = await AlertInbox.pending(preferences);
       if (_disposed || epoch != _historyEpoch) return;
       for (final event in incoming) {
-        if (!_events.any((e) => e.id == event.id)) _events.add(event);
+        if (!_events.any((e) => e.identity == event.identity))
+          _events.add(event);
       }
       _events.sort((a, b) => b.at.compareTo(a.at));
       _pruneActivity();
       if (incoming.isNotEmpty) await _saveActivity();
       // Remove only the keys read above; another notification may have arrived.
-      for (final event in incoming) {
-        await preferences.remove('${AlertInbox.prefix}${event.id}');
-      }
+      await AlertInbox.acknowledge(preferences, incoming);
     } finally {
       _mergingInbox = false;
     }
@@ -1697,6 +2118,10 @@ class HomeMonitor extends ChangeNotifier {
     required bool alertsOnly,
     bool quiet = false,
   }) async {
+    if (cloudMultiRoom) {
+      await _startCloudRooms(quiet: quiet);
+      return;
+    }
     if (_busy || isActive || _disposed || !hasPairing) return;
     _busy = true;
     final epoch = ++_epoch;
@@ -1938,12 +2363,22 @@ class HomeMonitor extends ChangeNotifier {
         : displayRoom;
     _remoteAlertAt[title] = DateTime.now();
     final id = alert['id'] is String ? alert['id'] as String : null;
-    if (id != null && _events.any((e) => e.id == id)) return;
+    final roomId = alert['roomId'] is String ? alert['roomId'] as String : null;
+    final origin = alert['origin'] is String
+        ? alert['origin'] as String
+        : (cloudMode ? cloudServer : null);
+    if (id != null &&
+        _events.any(
+          (e) => e.id == id && e.roomId == roomId && e.origin == origin,
+        ))
+      return;
     _addEvent(
       ActivityKind.sound,
       title,
       id: id,
       room: room,
+      roomId: roomId,
+      origin: origin,
       category: alert['kind'] is String ? alert['kind'] : null,
       delivery: AlertDelivery.received,
     );
@@ -2142,7 +2577,11 @@ class HomeMonitor extends ChangeNotifier {
   void setVolume(double value) {
     _volume = value.clamp(0, 1);
     _listener?.volume = _volume;
-    _cloud?.setVolume(_volume);
+    if (cloudMultiRoom) {
+      _roomCoordinator?.setVolume(_volume);
+    } else {
+      _cloud?.setVolume(_volume);
+    }
     _notify();
   }
 
@@ -2166,8 +2605,8 @@ class HomeMonitor extends ChangeNotifier {
     if (!value) {
       _recordingPaused = true;
       await prefs?.setBool('recording_paused', true);
-      _interruptRecording();
-      _cloud?.requestRecordingAudio(false);
+      if (!deviceRecording) _interruptRecording();
+      _syncRecordingRequest();
       if (isGuardian) await stop();
       soundWatch.enabled = false;
       soundWatch.reset();
@@ -2184,9 +2623,7 @@ class HomeMonitor extends ChangeNotifier {
       soundWatch.enabled = true;
       _recordingPaused = false;
       await prefs?.setBool('recording_paused', false);
-      _cloud?.requestRecordingAudio(
-        _deviceRole == DeviceRole.away && _recordingOptIn,
-      );
+      _syncRecordingRequest();
       await prefs?.setBool('sound_enabled', true);
       debugPrint('sound watch: enabled, ready=${soundWatch.ready}');
       _notify();
@@ -2226,11 +2663,9 @@ class HomeMonitor extends ChangeNotifier {
       soundWatch.categories.remove(name);
     }
     soundWatch.reset();
-    await _recordings.stop();
+    if (!deviceRecording) await _recordings.stop();
     _lastRecordingVerdict = null;
-    _cloud?.requestRecordingAudio(
-      _deviceRole == DeviceRole.away && _recordingOptIn,
-    );
+    _syncRecordingRequest();
     await prefs?.setStringList(
       'sound_categories',
       soundWatch.categories.toList(),
@@ -2254,6 +2689,8 @@ class HomeMonitor extends ChangeNotifier {
     int? durationMs,
     AlertDelivery delivery = AlertDelivery.local,
     String? room,
+    String? roomId,
+    String? origin,
   }) {
     if (_disposed) return null;
     final event = ActivityEvent(
@@ -2262,6 +2699,8 @@ class HomeMonitor extends ChangeNotifier {
       room: room ?? displayRoom,
       at: DateTime.now(),
       id: id ?? PairingInfo.newToken().substring(0, 24),
+      roomId: roomId ?? (cloudMode ? _cloud?.roomId : null),
+      origin: origin ?? (cloudMode ? cloudServer : null),
       category: category,
       modelScore: score,
       modelVersion: score == null ? null : 'yamnet-audioset-v1',
@@ -2307,6 +2746,7 @@ class HomeMonitor extends ChangeNotifier {
     _suppressAuto = true;
     _wantListening = false;
     _role = MonitorRole.idle;
+    await _roomCoordinator?.stop();
     await _cloud?.stopHome();
     await _cloud?.stopAway();
     await _teardownTalker();
@@ -2340,6 +2780,7 @@ class HomeMonitor extends ChangeNotifier {
     unawaited(stop().whenComplete(() => _recorderInstance?.dispose()));
     unawaited(soundWatch.dispose());
     unawaited(_cloud?.close());
+    unawaited(_roomCoordinator?.close());
     unawaited(_smartHome.dispose());
     super.dispose();
   }

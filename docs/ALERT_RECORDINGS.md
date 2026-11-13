@@ -1,5 +1,7 @@
 # Optional alert recordings
 
+Version 2.3.0 also includes **Record room to this device** on native receivers and **Record this room** in the web listener. Manual recording saves incoming audio from the selected room without waiting for a detector verdict. It starts only after a local tap, saves a WAV when stopped, and finishes when switching rooms or losing live access. Connected muted rooms are not recorded. Clips keep their room identity and room-labelled export/download names; see [saved rooms and recording](RELEASE_2_3_0.md).
+
 On the receiving Android phone, iPhone/iPad app, or web listener, select the sounds you want to record. Recording is off unless its checkbox is selected. Crying defaults to 30 seconds and coughing to 8 seconds. Duration rules can extend to five minutes. Keep live listening connected before the episode starts.
 
 The home phone's alert rules determine remote push timing. A receiver's recording duration determines which local clips it keeps; changing it does not remotely reconfigure the home phone. Set the crying rule to 30 seconds on the home phone for 30-second push alerts.

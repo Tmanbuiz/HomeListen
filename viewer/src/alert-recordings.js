@@ -4,7 +4,7 @@ import { RecordingSubscription } from './recording-subscription.js';
 
 export const RECORDING_CHANNEL = "homelisten-alert-audio-v1";
 export const CATEGORIES = ["crying", "coughing", "barking", "knocking", "loud sound"];
-export const LABELS = { crying: "Crying", coughing: "Coughing", barking: "Dog sounds", knocking: "Knocks and doorbells", "loud sound": "Loud sounds" };
+export const LABELS = { crying: "Crying", coughing: "Coughing", barking: "Dog sounds", knocking: "Knocks and doorbells", "loud sound": "Loud sounds", manual: "Room recording" };
 export const MAX_CLIP_BYTES = 16_000 * 2 * 600;
 const RATE = 32_000, GAP = 2000, DAY = 86_400_000;
 export function defaultRules() {
@@ -28,10 +28,11 @@ export function decodePcmPacket(value) {
   if (view.getUint32(0, false) !== 0x484c4131) return null; // HLA1
   return { sequence: view.getUint32(4, true), clock: view.getUint32(8, true), pcm: new Uint8Array(value.slice(12)) };
 }
-export function clipName(category, at, suffix = "") {
+export function clipName(category, at, suffix = "", roomName = "") {
   const d = new Date(at), p = (n, width = 2) => String(n).padStart(width, "0");
   const stamp = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}-${p(d.getMilliseconds(), 3)}`;
-  return `${stamp}_${LABELS[category].replaceAll(" ", "_")}${suffix}.wav`;
+  const room = typeof roomName === "string" ? roomName.replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 48) : "";
+  return `${room ? room + "_" : ""}${stamp}_${LABELS[category].replaceAll(" ", "_")}${suffix}.wav`;
 }
 export function wav(parts, size) {
   const header = new ArrayBuffer(44), h = new DataView(header);
@@ -45,16 +46,29 @@ export function wav(parts, size) {
 }
 
 export class EpisodeRecorder {
-  constructor({ rules = defaultRules(), onClip = () => {}, onState = () => {}, now = () => Date.now() } = {}) {
-    Object.assign(this, { rules, onClip, onState, now });
+  constructor({ rules = defaultRules(), onClip = () => {}, onState = () => {}, now = () => Date.now(), context = () => ({}) } = {}) {
+    Object.assign(this, { rules, onClip, onState, now, context });
     this.pre = []; this.preBytes = 0; this.candidate = null;
     this.sequence = this.clock = this.lastPcmAt = this.lastVerdictAt = null;
     this.frameDuration = 0;
+    this.manualArmed = false; this.manualContext = {}; this.manualProblem = null;
   }
-  get enabled() { return CATEGORIES.some((name) => this.rules[name]?.recordAudio); }
+  get enabled() { return this.manualArmed || CATEGORIES.some((name) => this.rules[name]?.recordAudio); }
   get recording() { return this.candidate?.qualified === true; }
+  startManual() {
+    this.stop("recording mode changed");
+    this.manualArmed = true; this.manualStartedAt = this.now(); this.manualProblem = null;
+    this.manualContext = { ...this.context() }; this.onState(false);
+  }
+  stopManual() {
+    this.manualArmed = false;
+    if (this.candidate?.category === "manual") this.finish("recording stopped");
+    this.pre = []; this.preBytes = 0;
+    this.sequence = this.clock = this.lastPcmAt = this.lastVerdictAt = null;
+    this.frameDuration = 0; this.onState(false);
+  }
   get waitingForVerdicts() {
-    return this.lastPcmAt != null && this.now() - this.lastPcmAt <= 1000 &&
+    return !this.manualArmed && this.lastPcmAt != null && this.now() - this.lastPcmAt <= 1000 &&
       (this.lastVerdictAt == null || this.now() - this.lastVerdictAt > 3000);
   }
   feed(packet) {
@@ -65,9 +79,21 @@ export class EpisodeRecorder {
     // A native capture tap can drop a100ms chunk before a sequence number is
     // assigned. Source-clock continuity catches that as well as transport loss.
     if (this.sequence != null && (frame.sequence !== ((this.sequence + 1) >>> 0) || delta > this.frameDuration + 80)) this.stop("connection interrupted");
+    if (!this.enabled) return;
     this.sequence = frame.sequence; this.clock = frame.clock; this.lastPcmAt = this.now();
     const { pcm } = frame;
     this.frameDuration = pcm.byteLength / RATE * 1000;
+    if (this.manualArmed) {
+      if (this.candidate && this.candidate.size + pcm.byteLength > MAX_CLIP_BYTES) this.finish("10 minute limit");
+      this.candidate ??= {
+        category: "manual", context: { ...this.manualContext }, startedAt: this.now() - this.frameDuration,
+        started: this.now() - this.frameDuration, lastMatched: this.now(), lastMatchedBytes: 0,
+        parts: [], size: 0, qualified: true
+      };
+      this.candidate.parts.push(pcm); this.candidate.size += pcm.byteLength;
+      this.candidate.lastMatched = this.now(); this.candidate.lastMatchedBytes = this.candidate.size;
+      this.onState(true); return;
+    }
     const active = this.candidate;
     if (active) {
       if (this.waitingForVerdicts) this.finish("detector updates paused");
@@ -88,6 +114,7 @@ export class EpisodeRecorder {
         if (active.qualified) {
           this.candidate = {
             category: active.category,
+            context: active.context,
             startedAt: active.startedAt + Math.round(split / RATE * 1000),
             started: this.now() - carry / RATE * 1000,
             lastMatched: active.lastMatched, lastMatchedBytes: 0,
@@ -102,6 +129,7 @@ export class EpisodeRecorder {
     while (this.pre.length > 1 && this.preBytes - this.pre[0].byteLength >= RATE) this.preBytes -= this.pre.shift().byteLength;
   }
   observe(category, _sourceAt = this.now()) {
+    if (this.manualArmed) return;
     if (!this.enabled || this.lastPcmAt == null || this.now() - this.lastPcmAt > 1000) return;
     if (category !== null && !CATEGORIES.includes(category)) return;
     this.lastVerdictAt = this.now();
@@ -116,6 +144,7 @@ export class EpisodeRecorder {
         // Use this receiving device's clock for its filenames. A home phone's
         // clock can be wrong even while its monotonic PCM cadence is healthy.
         category, startedAt: this.now() - Math.round(this.preBytes / RATE * 1000),
+        context: { ...this.context() },
         started: this.now() - this.preBytes / RATE * 1000, lastMatched: this.now(),
         parts: this.pre.slice(), size: this.preBytes, lastMatchedBytes: this.preBytes, qualified: false
       };
@@ -144,19 +173,25 @@ export class EpisodeRecorder {
       }
       const id = `${active.startedAt}-${globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)}`;
       this.onClip({ id, category: active.category, startedAt: active.startedAt,
-        name: clipName(active.category, active.startedAt, `_${id.slice(-6)}`),
+        ...(typeof active.context?.roomId === "string" ? { roomId: active.context.roomId } : {}),
+        ...(typeof active.context?.roomName === "string" ? { roomName: active.context.roomName } : {}),
+        name: clipName(active.category, active.startedAt, `_${id.slice(-6)}`, active.context?.roomName),
         durationMs: Math.round(size / RATE * 1000), reason,
         audio: wav(parts, size), size: size + 44 });
     }
     this.onState(false);
   }
   stop(reason = "listening stopped") {
+    this.manualArmed = false;
     this.finish(reason); this.pre = []; this.preBytes = 0;
     this.sequence = this.clock = this.lastPcmAt = this.lastVerdictAt = null;
     this.frameDuration = 0;
   }
   tick() {
-    if (this.lastPcmAt != null && this.now() - this.lastPcmAt > 1000) this.stop("connection interrupted");
+    if (this.manualArmed && this.lastPcmAt == null && this.now() - this.manualStartedAt > 5000) {
+      this.stop("recording audio unavailable"); this.manualProblem = "No recording audio arrived. Check the home app and reconnect live audio.";
+    }
+    else if (this.lastPcmAt != null && this.now() - this.lastPcmAt > 1000) this.stop("connection interrupted");
     else if (this.candidate && this.waitingForVerdicts) this.finish("detector updates paused");
     else if (this.candidate && this.now() - this.candidate.lastMatched >= GAP) this.finish();
   }
@@ -203,21 +238,29 @@ export function createAlertRecordings(container) {
   let raw;
   try { raw = localStorage.getItem(settingsKey); } catch { /* unavailable */ }
   const rules = restoreRules(raw), store = new RecordingStore();
-  let channel = null, subscription = null, timer = null, epoch = 0, urls = [], saveTail = Promise.resolve(), problem = null, state = "Recording is off. Select the sounds to save.";
-  const heading = document.createElement("h2"); heading.textContent = "Record sound alerts";
+  let channel = null, ownedChannel = false, roomContext = {}, listGeneration = 0, subscription = null, requested = null, timer = null, epoch = 0, urls = [], saveTail = Promise.resolve(), problem = null, state = "Recording is off. Select the sounds to save.";
+  const heading = document.createElement("h2"); heading.textContent = "Record to this device";
   const help = document.createElement("p"); help.className = "fine";
-  help.textContent = "Optional audio is saved only in this receiving browser. Keep Listen live connected from the start of the sound. The home phone must use Live + Guardian and enable that sound. Recording can stop when the page closes or the device suspends. Browser storage can be cleared or evicted; download clips you want to keep.";
+  help.textContent = "Tap Record this room to save its live sound on this device, or select automatic sound recordings below. Only the selected room is recorded. Switching rooms, logging out or losing the connection stops recording. The home phone must support recording audio in Live + Guardian. Browser storage can be cleared or evicted; download clips you want to keep.";
+  const manual = document.createElement("button"); manual.id = "record-device-button"; manual.type = "button";
+  const automatic = document.createElement("h3"); automatic.textContent = "Automatic sound recordings";
   const status = document.createElement("p"); status.className = "recording-status"; status.setAttribute("role", "status");
   const ruleBox = document.createElement("div"), list = document.createElement("ol"); list.className = "recording-list";
   const error = (value) => { problem = `Recording problem: ${value.message ?? value}`; renderStatus(); };
-  const recorder = new EpisodeRecorder({ rules,
-    onState: () => renderStatus(),
+  const recorder = new EpisodeRecorder({ rules, context: () => roomContext,
+    onState: () => { subscribe(); },
     onClip: (clip) => {
       saveTail = saveTail.then(() => store.save(clip)).then(renderList).catch(error);
     }
   });
   function renderStatus() {
-    status.textContent = problem ?? (recorder.recording ? "● Recording this sound on this device…" :
+    manual.textContent = recorder.manualArmed ? "Stop recording" : "Record this room";
+    manual.disabled = !recorder.manualArmed && channel?.readyState !== "open";
+    manual.classList.toggle("recording-active", recorder.manualArmed);
+    manual.setAttribute("aria-pressed", String(recorder.manualArmed));
+    status.textContent = problem ?? recorder.manualProblem ?? (recorder.manualArmed
+      ? recorder.recording ? "● Recording this room on this device…" : "Waiting for this room’s recording audio…"
+      : recorder.recording ? "● Recording this sound on this device…" :
       !recorder.enabled ? "Recording is off. Select the sounds to save." :
       channel?.readyState === "open" ? (recorder.lastPcmAt == null
         ? subscription?.exhausted ? "Home phone has not confirmed recording · update and restart the home app, then reconnect Listen live" : "Waiting for recording audio · update the home app if this continues"
@@ -226,9 +269,17 @@ export function createAlertRecordings(container) {
     status.classList.toggle("recording-active", recorder.recording);
   }
   function subscribe() {
-    subscription?.request(recorder.enabled);
+    if (subscription && requested !== recorder.enabled) {
+      requested = recorder.enabled; subscription.request(recorder.enabled);
+    }
     renderStatus();
   }
+  manual.addEventListener("click", () => {
+    problem = null;
+    if (recorder.manualArmed) recorder.stopManual();
+    else if (channel?.readyState === "open") recorder.startManual();
+    subscribe();
+  });
   function changed() {
     problem = null;
     recorder.stop("recording settings changed");
@@ -250,12 +301,15 @@ export function createAlertRecordings(container) {
     hold.append(select); row.append(label, hold); ruleBox.append(row);
   }
   async function renderList() {
-    const clips = await store.list();
+    const generation = ++listGeneration, selected = roomContext.roomId;
+    const all = await store.list();
+    if (generation !== listGeneration) return;
+    const clips = all.filter((clip) => !selected || !clip.roomId || clip.roomId === selected);
     for (const url of urls) URL.revokeObjectURL(url); urls = [];
     list.replaceChildren();
     for (const clip of clips) {
       const item = document.createElement("li"), name = document.createElement("strong"), info = document.createElement("p"), player = document.createElement("audio");
-      name.textContent = clip.name; info.className = "fine"; info.textContent = `${(clip.durationMs / 1000).toFixed(1)}s · ${clip.reason}`;
+      name.textContent = clip.name; info.className = "fine"; info.textContent = `${clip.roomName ? clip.roomName + " · " : ""}${(clip.durationMs / 1000).toFixed(1)}s · ${clip.reason}`;
       const url = URL.createObjectURL(clip.audio); urls.push(url); player.src = url; player.controls = true; player.preload = "none";
       const actions = document.createElement("div"); actions.className = "recording-actions";
       const download = document.createElement("a"); download.href = url; download.download = clip.name; download.textContent = "Download";
@@ -265,22 +319,33 @@ export function createAlertRecordings(container) {
     }
     if (!clips.length) { const empty = document.createElement("li"); empty.textContent = "No recorded alerts yet."; list.append(empty); }
   }
-  const limits = document.createElement("p"); limits.className = "fine"; limits.textContent = "Clips close after a 2-second detection gap and trim back to the last matching sound. Long episodes split at 10 minutes. Kept for 7 days, up to 100 clips or 200 MB. Short candidates below your duration are discarded.";
+  const limits = document.createElement("p"); limits.className = "fine"; limits.textContent = "Manual recordings continue until stopped; automatic clips close after a 2-second detection gap. Both split at 10 minutes and are kept for 7 days, up to 100 clips or 200 MB. Short automatic candidates below your duration are discarded.";
   const clear = document.createElement("button"); clear.type = "button"; clear.className = "secondary"; clear.textContent = "Delete all recordings";
   clear.addEventListener("click", () => { if (confirm("Delete all audio recordings from this browser?")) { recorder.stop("recordings cleared"); void saveTail.then(() => store.clear()).then(renderList).catch(error); } });
-  container.append(heading, help, ruleBox, status, limits, list, clear);
+  container.append(heading, help, manual, status, automatic, ruleBox, limits, list, clear);
   renderStatus(); void renderList().catch(error);
   return {
+    setRoomContext(context) {
+      if (context.roomId === roomContext.roomId) roomContext = { ...context };
+    },
     attachPeer(pc) {
-      this.stop(); const generation = ++epoch;
-      channel = pc.createDataChannel(RECORDING_CHANNEL, { ordered: true });
+      this.attachChannel(pc.createDataChannel(RECORDING_CHANNEL, { ordered: true }), roomContext, true);
+    },
+    attachChannel(next, context = {}, own = false) {
+      if (channel === next && roomContext.roomId === context.roomId) {
+        roomContext = { ...context }; return;
+      }
+      this.stop(); roomContext = { ...context }; recorder.manualProblem = null; void renderList().catch(error);
+      if (!next) return;
+      const generation = ++epoch;
+      channel = next; ownedChannel = own;
       const current = channel; current.binaryType = "arraybuffer";
       subscription = new RecordingSubscription({
         send: (message) => current.send(message),
         isOpen: () => generation === epoch && current.readyState === "open",
         onChanged: renderStatus
       });
-      subscription.request(recorder.enabled);
+      requested = null; subscribe();
       current.onopen = () => { if (generation === epoch) subscription?.opened(); };
       current.onmessage = (event) => {
         if (generation !== epoch || !recorder.enabled) return;
@@ -304,9 +369,11 @@ export function createAlertRecordings(container) {
     },
     stop() {
       epoch++; clearInterval(timer); timer = null;
-      subscription?.close(); subscription = null;
+      subscription?.request(false); subscription?.close(); subscription = null;
+      requested = null;
       const old = channel; channel = null;
-      if (old) { old.onopen = old.onmessage = old.onclose = old.onerror = null; old.close(); }
+      if (old) { old.onopen = old.onmessage = old.onclose = old.onerror = null; if (ownedChannel) old.close(); }
+      ownedChannel = false;
       recorder.stop(); state = "Recording armed · choose Listen live to receive audio."; renderStatus();
     }
   };

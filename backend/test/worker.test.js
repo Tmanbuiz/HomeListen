@@ -165,6 +165,35 @@ test("leaving unregisters push and active sessions", async () => {
   assert.equal(await s.store.get("rooms/" + id + "/devices/away"), null);
   assert.equal((await s.api("/rooms/" + id, "away", {}, "GET")).status, 404);
 });
+
+test("one away phone can retain independent live sessions across rooms and leave just one", async () => {
+  const s = setup(); const first = await s.home();
+  const second = await s.api('/rooms', 'home_two', { roomName: 'Children room' });
+  const secondId = second.body.roomId;
+  const invite = await s.api(`/rooms/${secondId}/invite`, 'home_two');
+  await s.join(first.id, first.secret, 'away');
+  await s.join(secondId, invite.body.secret, 'away');
+  await s.join(first.id, first.secret, 'other_away');
+  await s.api(`/rooms/${first.id}/state`, 'home', { sharing: true });
+  await s.api(`/rooms/${secondId}/state`, 'home_two', { sharing: true });
+  for (const id of [first.id, secondId]) {
+    await s.api(`/rooms/${id}/device`, 'away', { kind: 'fcm', token: 'a'.repeat(80) });
+  }
+  const firstSession = await s.api(`/rooms/${first.id}/sessions`, 'away');
+  const secondSession = await s.api(`/rooms/${secondId}/sessions`, 'away');
+  const otherSession = await s.api(`/rooms/${first.id}/sessions`, 'other_away');
+  assert.equal(firstSession.status, 201); assert.equal(secondSession.status, 201);
+  const secondBefore = (await s.store.get(`rooms/${secondId}`)).data;
+  assert.equal((await s.api(`/rooms/${first.id}/leave`, 'away')).status, 200);
+  assert.equal((await s.api(`/rooms/${first.id}/sessions`, 'away')).status, 404);
+  assert.equal((await s.api(`/rooms/${first.id}`, 'other_away', {}, 'GET')).status, 200);
+  assert.equal((await s.store.get(`rooms/${first.id}`)).data.activeSessions.other_away, otherSession.body.sessionId);
+  assert.deepEqual((await s.store.get(`rooms/${secondId}`)).data, secondBefore);
+  assert.equal((await s.store.get(`rooms/${secondId}/devices/away`)).data.token, 'a'.repeat(80));
+  assert.equal((await s.api(`/rooms/${secondId}`, 'away', {}, 'GET')).status, 200);
+  assert.equal((await s.api(`/rooms/${secondId}/alerts`, 'home_two', { id: 'multiroom_event_123456', kind: 'test' })).body.sent, 1);
+  assert.equal(s.pushes.at(-1).payload.roomId, secondId);
+});
 test("config excludes private keys and unexpected origins are rejected", async () => {
   const s = setup();
   const config = await s.api("/config", null, {}, "GET");

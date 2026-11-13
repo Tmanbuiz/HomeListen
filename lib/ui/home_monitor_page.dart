@@ -8,6 +8,7 @@ import '../core/activity_event.dart';
 import '../core/home_monitor.dart';
 import '../core/pairing.dart';
 import '../core/cloud_pairing.dart';
+import '../core/saved_rooms.dart';
 import '../protocols/mic_monitor.dart';
 import 'access_dialogs.dart';
 import 'design.dart';
@@ -221,14 +222,22 @@ class _Dashboard extends StatelessWidget {
         _Heading(
           home
               ? (monitor.guardianOnly ? 'Guard this room' : 'Share this room')
+              : monitor.cloudMultiRoom
+              ? 'Your rooms'
               : 'Your home',
           home
               ? 'Your microphone, under your control.'
+              : monitor.cloudMultiRoom
+              ? 'Choose the room you hear.'
               : 'Hear what’s happening in your room.',
         ),
         const SizedBox(height: 22),
         if (home) ...[
           HomeModeSelector(monitor: monitor),
+          const SizedBox(height: 18),
+        ],
+        if (monitor.cloudMultiRoom && monitor.savedCloudRooms.isNotEmpty) ...[
+          _SavedCloudRooms(monitor: monitor),
           const SizedBox(height: 18),
         ],
         SurfaceCard(
@@ -403,6 +412,8 @@ class _Dashboard extends StatelessWidget {
                   : on
                   ? home
                         ? 'Turn microphone off'
+                        : monitor.cloudMultiRoom
+                        ? 'Stop all listening'
                         : monitor.isWatching
                         ? 'Stop watching'
                         : 'Stop listening'
@@ -410,12 +421,28 @@ class _Dashboard extends StatelessWidget {
                   ? monitor.guardianOnly
                         ? 'Start Guardian'
                         : 'Share this room'
+                  : monitor.cloudMultiRoom
+                  ? 'Connect rooms'
                   : monitor.liveAvailable
                   ? 'Listen to home'
                   : 'Watch Guardian alerts',
             ),
           ),
-        if (!home && monitor.hasPairing && !on && !monitor.busy)
+        if (!home && monitor.hasPairing)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: DeviceRecordingControl(
+              recording: monitor.deviceRecording,
+              canRecord: monitor.canRecordDevice && !monitor.busy,
+              onStart: monitor.startDeviceRecording,
+              onStop: monitor.stopDeviceRecording,
+            ),
+          ),
+        if (!home &&
+            !monitor.cloudMultiRoom &&
+            monitor.hasPairing &&
+            !on &&
+            !monitor.busy)
           Padding(
             padding: const EdgeInsets.only(top: 8),
             child: OutlinedButton.icon(
@@ -424,7 +451,7 @@ class _Dashboard extends StatelessWidget {
               label: const Text('Alerts only — no sound'),
             ),
           ),
-        if (!home && monitor.hasPairing && on)
+        if (!home && !monitor.cloudMultiRoom && monitor.hasPairing && on)
           Padding(
             padding: const EdgeInsets.only(top: 8),
             child: SegmentedButton<bool>(
@@ -532,6 +559,194 @@ class _Dashboard extends StatelessWidget {
       ],
     );
   }
+}
+
+class DeviceRecordingControl extends StatefulWidget {
+  const DeviceRecordingControl({
+    super.key,
+    required this.recording,
+    required this.canRecord,
+    required this.onStart,
+    required this.onStop,
+  });
+  final bool recording, canRecord;
+  final Future<void> Function() onStart, onStop;
+
+  @override
+  State<DeviceRecordingControl> createState() => _DeviceRecordingControlState();
+}
+
+class _DeviceRecordingControlState extends State<DeviceRecordingControl> {
+  bool _busy = false;
+
+  Future<void> _record() async {
+    setState(() => _busy = true);
+    try {
+      await (widget.recording ? widget.onStop() : widget.onStart());
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('The recording action could not be completed.'),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => OutlinedButton.icon(
+    key: const ValueKey('home-record-to-device'),
+    onPressed: _busy || (!widget.recording && !widget.canRecord)
+        ? null
+        : _record,
+    icon: Icon(
+      widget.recording ? Icons.stop_circle_outlined : Icons.fiber_manual_record,
+    ),
+    label: Text(
+      widget.recording
+          ? 'Stop and save recording'
+          : 'Record selected room to this device',
+    ),
+  );
+}
+
+class _SavedCloudRooms extends StatelessWidget {
+  const _SavedCloudRooms({required this.monitor});
+  final HomeMonitor monitor;
+
+  @override
+  Widget build(BuildContext context) => CloudRoomsCard(
+    rooms: monitor.savedCloudRooms,
+    selectedRoomId: monitor.selectedCloudRoomId,
+    connectedCount: monitor.connectedCloudRoomCount,
+    statusForRoom: monitor.cloudRoomStatus,
+    onSelected: monitor.selectCloudRoom,
+    onLogout: monitor.logoutCloudRoom,
+    onAdd: () => _scan(context, monitor),
+    busy: monitor.busy,
+  );
+}
+
+/// The listening-phone room picker. Selection changes which room is audible;
+/// the coordinator retains the other room connections until Stop or logout.
+class CloudRoomsCard extends StatelessWidget {
+  const CloudRoomsCard({
+    super.key,
+    required this.rooms,
+    required this.selectedRoomId,
+    required this.connectedCount,
+    required this.statusForRoom,
+    required this.onSelected,
+    required this.onLogout,
+    required this.onAdd,
+    this.busy = false,
+  });
+
+  final List<SavedCloudRoom> rooms;
+  final String? selectedRoomId;
+  final int connectedCount;
+  final String Function(String roomId) statusForRoom;
+  final Future<void> Function(String roomId) onSelected, onLogout;
+  final VoidCallback onAdd;
+  final bool busy;
+
+  Future<void> _run(
+    BuildContext context,
+    Future<void> Function() action,
+  ) async {
+    try {
+      await action();
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$error')));
+      }
+    }
+  }
+
+  Future<void> _logout(BuildContext context, SavedCloudRoom room) async {
+    final confirmed = await confirmAction(
+      context,
+      'Log out of ${room.displayName}?',
+      'Remove this phone from this room? Its live audio and alerts will stop on this phone. Your other saved rooms and every other device stay connected. Pair again to add this room back.',
+    );
+    if (confirmed == true && context.mounted) {
+      await _run(context, () => onLogout(room.roomId));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => SurfaceCard(
+    padding: 16,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Rooms on this phone',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          '${rooms.length} saved room${rooms.length == 1 ? '' : 's'} · $connectedCount live connection${connectedCount == 1 ? '' : 's'}',
+          style: const TextStyle(fontSize: 12),
+        ),
+        const SizedBox(height: 10),
+        const Text(
+          'While listening is on, available rooms stay connected. Only the selected room plays. Optional recordings use the selected room only.',
+          style: TextStyle(fontSize: 12),
+        ),
+        if (rooms.isEmpty)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 16),
+            child: Text('No rooms saved. Add a home phone to begin.'),
+          ),
+        for (final room in rooms)
+          ListTile(
+            key: ValueKey('select-cloud-room-${room.roomId}'),
+            contentPadding: EdgeInsets.zero,
+            horizontalTitleGap: 10,
+            minLeadingWidth: 24,
+            selected: room.roomId == selectedRoomId,
+            leading: Icon(
+              room.roomId == selectedRoomId
+                  ? Icons.volume_up_outlined
+                  : Icons.volume_off_outlined,
+            ),
+            title: Text(room.displayName),
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(statusForRoom(room.roomId)),
+                Text(
+                  room.roomId == selectedRoomId
+                      ? 'Selected audio'
+                      : 'Muted · tap to select audio',
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ],
+            ),
+            onTap: busy || room.roomId == selectedRoomId
+                ? null
+                : () => _run(context, () => onSelected(room.roomId)),
+            trailing: IconButton(
+              key: ValueKey('logout-cloud-room-${room.roomId}'),
+              tooltip: 'Log out this phone from ${room.displayName}',
+              onPressed: busy ? null : () => _logout(context, room),
+              icon: const Icon(Icons.logout),
+            ),
+          ),
+        OutlinedButton.icon(
+          key: const ValueKey('add-cloud-room'),
+          onPressed: busy ? null : onAdd,
+          icon: const Icon(Icons.add_home_outlined),
+          label: const Text('Add room'),
+        ),
+      ],
+    ),
+  );
 }
 
 class _WatchCard extends StatelessWidget {
@@ -795,8 +1010,17 @@ class _Devices extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const _Heading('Devices', 'Connect the two phones you use.'),
+        _Heading(
+          'Devices',
+          monitor.cloudMultiRoom
+              ? 'Manage the rooms saved on this phone.'
+              : 'Connect the two phones you use.',
+        ),
         const SizedBox(height: 24),
+        if (monitor.cloudMultiRoom) ...[
+          _SavedCloudRooms(monitor: monitor),
+          const SizedBox(height: 18),
+        ],
         // A listening phone shows the phone it listens to. Its own battery and
         // role are not what anyone opens this page to check.
         if (!home && monitor.hasPairing)
@@ -954,13 +1178,15 @@ class _Devices extends StatelessWidget {
                   SwitchListTile.adaptive(
                     contentPadding: EdgeInsets.zero,
                     title: const Text('Connect automatically'),
-                    subtitle: const Text(
-                      'When this app is running and your home phone is sharing.',
+                    subtitle: Text(
+                      monitor.cloudMultiRoom
+                          ? 'Keep saved rooms connected while this app is running and their home phones are sharing.'
+                          : 'When this app is running and your home phone is sharing.',
                     ),
                     value: monitor.autoConnect,
                     onChanged: monitor.setAutoConnect,
                   ),
-                  if (monitor.autoConnect)
+                  if (monitor.autoConnect && !monitor.cloudMultiRoom)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 8),
                       child: SegmentedButton<String>(
@@ -980,19 +1206,20 @@ class _Devices extends StatelessWidget {
                         onSelectionChanged: (s) => monitor.setAutoMode(s.first),
                       ),
                     ),
-                  TextButton(
-                    onPressed: () async {
-                      if (await confirmAction(
-                            context,
-                            'Forget home phone?',
-                            'You will need to scan its pairing code again to listen.',
-                          ) ==
-                          true) {
-                        await monitor.forgetPairing();
-                      }
-                    },
-                    child: const Text('Forget this home phone'),
-                  ),
+                  if (!monitor.cloudMultiRoom)
+                    TextButton(
+                      onPressed: () async {
+                        if (await confirmAction(
+                              context,
+                              'Forget home phone?',
+                              'You will need to scan its pairing code again to listen.',
+                            ) ==
+                            true) {
+                          await monitor.forgetPairing();
+                        }
+                      },
+                      child: const Text('Forget this home phone'),
+                    ),
                 ],
               ),
             ),
@@ -1003,6 +1230,8 @@ class _Devices extends StatelessWidget {
             label: Text(
               !monitor.hasPairing
                   ? 'Scan pairing code'
+                  : monitor.cloudMultiRoom
+                  ? 'Add another room'
                   : 'Pair a different home phone',
             ),
           ),
