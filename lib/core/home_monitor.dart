@@ -296,7 +296,7 @@ class HomeMonitor extends ChangeNotifier {
     _recordings.observe(
       category,
       at,
-      minimumSeconds: rule?.minimumSeconds ?? 0,
+      minimumSeconds: rule?.recordingMinimumSeconds ?? 0,
       recordAudio:
           category != null &&
           soundWatch.categories.contains(category) &&

@@ -74,6 +74,19 @@ export class FirestoreStore {
       ] })
     });
   }
+  async putInvitation(id, room, invitation) {
+    // The room precondition and invitation replacement commit together. A
+    // delayed request cannot overwrite a fresh link after a concurrent revoke.
+    await this.call(":commit", {
+      method: "POST",
+      body: JSON.stringify({ writes: [
+        { update: { name: this.name + "rooms/" + id,
+          fields: fields({ invitationEpoch: room.data.invitationEpoch ?? 0 }) },
+          updateMask: { fieldPaths: ["invitationEpoch"] }, currentDocument: { updateTime: room.version } },
+        { update: { name: this.name + "roomInvites/" + id, fields: fields(invitation) } }
+      ] })
+    });
+  }
   async openSession(id, room, sid, session) {
     const activeSessions = { ...room.data.activeSessions, [session.viewerUid]: sid };
     const old = room.data.activeSessions?.[session.viewerUid];

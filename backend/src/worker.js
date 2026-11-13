@@ -203,10 +203,11 @@ async function rememberMember(store, id, uid, label, nowMs) {
   }
 }
 
-async function addMember(store, id, uid, generation = null) {
+async function addMember(store, id, uid, generation = null, invitationEpoch = null) {
   for (let attempt = 0; attempt < 5; attempt++) {
     const room = await store.get("rooms/" + id);
-    if (!room || (generation !== null && room.data.generation !== generation)) {
+    if (!room || (generation !== null && room.data.generation !== generation) ||
+        (invitationEpoch !== null && (room.data.invitationEpoch ?? 0) !== invitationEpoch)) {
       throw new HttpError(403, "This pairing code was revoked.");
     }
     if (room.data.ownerUid === uid) throw new HttpError(400, "Use a different phone to listen.");
@@ -382,7 +383,7 @@ export function createWorker(overrides = {}) {
         ok: true,
         configured: Boolean(env.FIREBASE_PROJECT_ID && env.FIREBASE_API_KEY &&
           env.FIREBASE_WEB_APP_ID && env.FIREBASE_ANDROID_APP_ID && env.FIREBASE_SERVICE_ACCOUNT),
-        version: "2.1.1"
+        version: "2.2.5"
       });
     }
     if (request.method === "GET" && path === "/api/config") return json({
@@ -402,7 +403,7 @@ export function createWorker(overrides = {}) {
       }
       const id = randomId();
       const room = {
-        ownerUid: uid, roomName: name, members: {}, watchers: {}, activeSessions: {}, generation: 1,
+        ownerUid: uid, roomName: name, members: {}, watchers: {}, activeSessions: {}, generation: 1, invitationEpoch: 0,
         sharing: false, lastSeenMs: 0, createdAt: new Date(now()),
         battery: null, charging: null
       };
@@ -467,7 +468,7 @@ export function createWorker(overrides = {}) {
       }
       // A valid invitation authorizes this first membership; an authenticated
       // token alone does not.
-      const data = await addMember(store, id, uid, invite.data.generation);
+      const data = await addMember(store, id, uid, invite.data.generation, invite.data.invitationEpoch ?? 0);
       await rememberMember(store, id, uid, deviceLabel(input.label), now());
       return json({ roomId: id, room: data });
     }
@@ -484,10 +485,19 @@ export function createWorker(overrides = {}) {
     if (action === "invite" && request.method === "POST") {
       const secret = randomId(32);
       const expiresAt = new Date(now() + INVITE_MS);
-      await store.put("roomInvites/" + id, {
-        secretHash: await digest(secret), generation: room.data.generation, expiresAt
-      });
-      return json({ roomId: id, secret, expiresAt, generation: room.data.generation });
+      const secretHash = await digest(secret);
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const current = attempt === 0 ? room : await readRoom(store, id, uid, true);
+        try {
+          // Issue against the same room revision that authorized the link. A
+          // concurrent removal must not publish an already-invalid invitation.
+          await store.putInvitation(id, current, {
+            secretHash, generation: current.data.generation,
+            invitationEpoch: current.data.invitationEpoch ?? 0, expiresAt
+          });
+          return json({ roomId: id, secret, expiresAt, generation: current.data.generation });
+        } catch (error) { if (error.status !== 409 || attempt === 4) throw error; }
+      }
     }
     if (action === "totp-start" && request.method === "POST") {
       const existing = await store.get("roomTotp/" + id);
@@ -543,8 +553,8 @@ export function createWorker(overrides = {}) {
       return json({ updated: true });
     }
     if (action === "revoke-member" && request.method === "POST") {
-      // Removes one listening phone. The others, and the pairing codes, are
-      // untouched; the removed phone must be given a new code to come back.
+      // Invalidate outstanding links in the same CAS that removes this phone.
+      // Session generation stays unchanged so other paired phones stay live.
       const input = await body(request);
       if (typeof input.uid !== "string" || room.data.members?.[input.uid] !== true) {
         throw new HttpError(404, "That phone is not paired.");
@@ -552,6 +562,7 @@ export function createWorker(overrides = {}) {
       await mutateRoom(store, id, uid, true, (data) => {
         delete data.members[input.uid]; delete data.watchers[input.uid]; delete data.activeSessions[input.uid];
         if (data.memberAccess) delete data.memberAccess[input.uid];
+        data.invitationEpoch = (data.invitationEpoch ?? 0) + 1;
         return data;
       });
       await store.delete("rooms/" + id + "/devices/" + input.uid);

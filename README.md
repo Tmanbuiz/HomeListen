@@ -62,6 +62,8 @@ Primary sources, checked 8 October 2026:
 
 Sharing never starts from a push, restart or remote request. Stop at home closes capture and peers. Revocation removes access to signaling and future alerts.
 
+Removing one listening phone invalidates outstanding pairing links without disconnecting other paired phones. Re-pair using a newly issued link or a fresh authenticator code; removing a device does not change its knowledge of the authenticator secret.
+
 ## Development
 
 Use Flutter **3.47.6**, Node **24**, Java **17** for Android and Java **21** for the Firestore emulator.

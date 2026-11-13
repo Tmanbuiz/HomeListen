@@ -115,6 +115,24 @@ class GuardianSettingsCard extends StatelessWidget {
       ? '${seconds ~/ 60}min'
       : '${seconds}s';
 
+  bool get _home => monitor.deviceRole == DeviceRole.home;
+  int _seconds(SoundRule rule) =>
+      _home ? rule.minimumSeconds : rule.recordingMinimumSeconds;
+  String _ruleDuration(String name, int seconds) =>
+      _home && name == 'coughing' && seconds == 0
+      ? 'Two coughs'
+      : _duration(seconds);
+
+  Future<void> _setDuration(String name, int seconds) {
+    final rule = monitor.guardianSettings.rules[name]!;
+    return monitor.setSoundRule(
+      name,
+      _home
+          ? rule.copyWith(minimumSeconds: seconds)
+          : rule.copyWith(recordingMinimumSeconds: seconds),
+    );
+  }
+
   String _clock(BuildContext context, int minute) =>
       TimeOfDay(hour: minute ~/ 60, minute: minute % 60).format(context);
   Future<void> _time(BuildContext context, bool start) async {
@@ -147,6 +165,37 @@ class GuardianSettingsCard extends StatelessWidget {
           const Text(
             'Set push-alert timing on the home phone. On a receiver, duration controls which recordings are kept. Scores are not probabilities.',
           ),
+          if (_home && settings.rules['coughing']!.durationNeedsReview) ...[
+            const SizedBox(height: 12),
+            const Text(
+              'Review cough alert timing',
+              style: TextStyle(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Your saved 8-second cough rule can miss short cough bursts. Recommended: two cough detections within eight seconds. Keep the duration if you chose it intentionally.',
+            ),
+            Wrap(
+              spacing: 8,
+              children: [
+                FilledButton.tonal(
+                  key: const ValueKey('use-two-cough-alerts'),
+                  onPressed: () => _setDuration('coughing', 0),
+                  child: const Text('Use two-cough alerts'),
+                ),
+                TextButton(
+                  key: const ValueKey('keep-cough-duration'),
+                  onPressed: () => monitor.setSoundRule(
+                    'coughing',
+                    settings.rules['coughing']!.copyWith(
+                      durationNeedsReview: false,
+                    ),
+                  ),
+                  child: const Text('Keep 8-second rule'),
+                ),
+              ],
+            ),
+          ],
           const SizedBox(height: 12),
           for (final name in guardianCategories)
             ExpansionTile(
@@ -154,7 +203,8 @@ class GuardianSettingsCard extends StatelessWidget {
               childrenPadding: EdgeInsets.zero,
               title: Text(HomeMonitor.soundCategoryLabel(name)),
               subtitle: Text(
-                '${_duration(settings.rules[name]!.minimumSeconds)} · repeat after ${settings.rules[name]!.cooldownSeconds}s'
+                '${_ruleDuration(name, _seconds(settings.rules[name]!))}'
+                '${_home ? ' · repeat after ${settings.rules[name]!.cooldownSeconds}s' : ' · recording duration'}'
                 '${settings.rules[name]!.recordAudio ? ' · saves audio' : ''}',
               ),
               children: [
@@ -183,37 +233,28 @@ class GuardianSettingsCard extends StatelessWidget {
                   ),
                 ),
                 Text(
-                  monitor.deviceRole == DeviceRole.home
-                      ? 'Alert after sound lasts'
+                  _home
+                      ? name == 'coughing'
+                            ? 'Additional duration after two coughs'
+                            : 'Alert after sound lasts'
                       : 'Keep recording after sound lasts',
                 ),
                 Slider(
-                  value: settings.rules[name]!.minimumSeconds.toDouble(),
+                  value: _seconds(settings.rules[name]!).toDouble(),
                   min: 0,
                   max: 300,
                   divisions: 300,
-                  label: _duration(settings.rules[name]!.minimumSeconds),
-                  onChanged: (value) => monitor.setSoundRule(
-                    name,
-                    settings.rules[name]!.copyWith(
-                      minimumSeconds: value.round(),
-                    ),
-                  ),
+                  label: _ruleDuration(name, _seconds(settings.rules[name]!)),
+                  onChanged: (value) => _setDuration(name, value.round()),
                 ),
                 Wrap(
                   spacing: 8,
                   children: [
                     for (final seconds in [0, 8, 15, 30, 60, 120, 300])
                       ChoiceChip(
-                        label: Text(_duration(seconds)),
-                        selected:
-                            settings.rules[name]!.minimumSeconds == seconds,
-                        onSelected: (_) => monitor.setSoundRule(
-                          name,
-                          settings.rules[name]!.copyWith(
-                            minimumSeconds: seconds,
-                          ),
-                        ),
+                        label: Text(_ruleDuration(name, seconds)),
+                        selected: _seconds(settings.rules[name]!) == seconds,
+                        onSelected: (_) => _setDuration(name, seconds),
                       ),
                   ],
                 ),

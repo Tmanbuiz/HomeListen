@@ -1,7 +1,10 @@
 import { before, after, beforeEach, test } from "node:test";
 import { readFile } from "node:fs/promises";
+import assert from "node:assert/strict";
 import { initializeTestEnvironment, assertFails, assertSucceeds } from "@firebase/rules-unit-testing";
 import { doc, collection, getDoc, getDocs, setDoc, updateDoc, Timestamp } from "firebase/firestore";
+import { FirestoreStore } from "../backend/src/store.js";
+import { HttpError } from "../backend/src/security.js";
 let env;
 const roomId = "room", sid = "session";
 const expiry = Timestamp.fromMillis(Date.now() + 60 * 60_000);
@@ -110,4 +113,35 @@ test('expired guests cannot read room state or continue signaling', async () => 
   await assertFails(getDoc(doc(db('away'), 'rooms', roomId)));
   await assertFails(getDoc(doc(db('away'), path)));
   await assertFails(updateDoc(doc(db('away'), path), { offer: 'expired offer' }));
+});
+
+test('a stale invitation commit cannot overwrite a fresh link or other paired sessions', async () => {
+  const host = process.env.FIRESTORE_EMULATOR_HOST;
+  assert.match(host ?? '', /^(127\.0\.0\.1|localhost|\[::1\]):[0-9]+$/);
+  const store = new FirestoreStore({ FIREBASE_PROJECT_ID: 'demo-homelisten' });
+  // Exercise the production commit/encoding logic with emulator-only admin
+  // transport. No service-account credentials or production endpoint is used.
+  store.call = async (suffix, options = {}) => {
+    const response = await fetch(`http://${host}/v1/${store.name.slice(0, -1)}${suffix}`, {
+      ...options, headers: { authorization: 'Bearer owner', 'content-type': 'application/json' }
+    });
+    const result = await response.json();
+    if (!response.ok) throw new HttpError(['FAILED_PRECONDITION', 'ABORTED'].includes(result.error?.status) ? 409 : response.status, 'emulator commit failed');
+    return result;
+  };
+  const old = await store.get(`rooms/${roomId}`);
+  await store.putInvitation(roomId, old, { secretHash: 'first', invitationEpoch: 0, generation: 1, expiresAt: new Date(Date.now() + 600000) });
+  const stale = await store.get(`rooms/${roomId}`);
+  await env.withSecurityRulesDisabled(async (context) => {
+    await updateDoc(doc(context.firestore(), 'rooms', roomId), { invitationEpoch: 1 });
+  });
+  const current = await store.get(`rooms/${roomId}`);
+  await store.putInvitation(roomId, current, { secretHash: 'fresh', invitationEpoch: 1, generation: 1, expiresAt: new Date(Date.now() + 600000) });
+  await assert.rejects(store.putInvitation(roomId, stale, { secretHash: 'stale', invitationEpoch: 0 }), { status: 409 });
+  assert.equal((await store.get(`roomInvites/${roomId}`)).data.secretHash, 'fresh');
+  const room = (await store.get(`rooms/${roomId}`)).data;
+  assert.deepEqual(room.members, old.data.members);
+  assert.deepEqual(room.activeSessions, old.data.activeSessions);
+  assert.equal(room.generation, old.data.generation);
+  assert.equal(room.invitationEpoch, 1);
 });

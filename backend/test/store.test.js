@@ -3,6 +3,23 @@ import assert from 'node:assert/strict';
 import { FirestoreStore } from '../src/store.js';
 import { HttpError } from '../src/security.js';
 
+test('invitation replacement is guarded by the room revision without changing member or session fields', async () => {
+  const store = new FirestoreStore({ FIREBASE_PROJECT_ID: 'demo-home' });
+  let commit;
+  store.call = async (path, options) => { assert.equal(path, ':commit'); commit = JSON.parse(options.body); };
+  await store.putInvitation('room', {
+    version: 'before-removal', data: { members: { second: true }, activeSessions: { second: 'live' }, invitationEpoch: 3 }
+  }, { secretHash: 'hashed', generation: 1, invitationEpoch: 3, expiresAt: new Date(600000) });
+  assert.equal(commit.writes.length, 2);
+  const [guard, invite] = commit.writes;
+  assert.deepEqual(guard.currentDocument, { updateTime: 'before-removal' });
+  assert.deepEqual(guard.updateMask.fieldPaths, ['invitationEpoch']);
+  assert.deepEqual(Object.keys(guard.update.fields), ['invitationEpoch']);
+  assert.equal(guard.update.fields.invitationEpoch.integerValue, '3');
+  assert.equal(invite.update.name, store.name + 'roomInvites/room');
+  assert.equal(invite.update.fields.invitationEpoch.integerValue, '3');
+});
+
 test('expired push removes only the examined registration and its watcher in one CAS commit', async () => {
   const store = new FirestoreStore({ FIREBASE_PROJECT_ID: 'demo-home' });
   store.get = async (path) => path.endsWith('/devices/away')
