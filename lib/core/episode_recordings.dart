@@ -36,7 +36,7 @@ class RecordingClip {
   };
 }
 
-/// Saves only opted-in sound episodes on the receiving phone.
+/// Saves opted-in sound episodes and manual recordings on the receiving phone.
 ///
 /// Feed the incoming 16 kHz mono PCM before sending its classifier verdict to
 /// [observe]. A one-second memory ring includes the first analysis window.
@@ -49,22 +49,20 @@ class EpisodeRecordings {
     required this.directory,
     this.onChanged,
     this.onError,
-    String? Function()? roomId,
-    String? Function()? room,
+    this.roomId,
+    this.room,
     DateTime Function()? clock,
     this.maximumClipSeconds = 600,
     this.maximumClips = 100,
     this.maximumBytes = 200 * 1024 * 1024,
-  }) : _clock = clock ?? DateTime.now,
-       _roomId = roomId,
-       _room = room;
+  }) : _clock = clock ?? DateTime.now;
 
   static const sampleRate = 16000;
   static const gapSamples = sampleRate * 2;
   static const _maximumPendingSamples = sampleRate * 4;
   final Future<Directory> Function() directory;
   final DateTime Function() _clock;
-  final String? Function()? _roomId, _room;
+  final String? Function()? roomId, room;
   final void Function()? onChanged;
   final void Function(String)? onError;
   final int maximumClipSeconds, maximumClips, maximumBytes;
@@ -90,7 +88,7 @@ class EpisodeRecordings {
   /// No audio captured before the tap is included in a manual recording.
   Future<void> startManual() {
     final generation = ++_manualGeneration;
-    final context = _RecordingContext(_roomId?.call(), _room?.call());
+    final context = _RecordingContext(roomId?.call(), room?.call());
     return _enqueue(() async {
       if (generation != _manualGeneration) return;
       await _finish();
@@ -298,7 +296,7 @@ class EpisodeRecordings {
     required bool recordAudio,
   }) {
     if (_manualArmed) return;
-    final context = _RecordingContext(_roomId?.call(), _room?.call());
+    final context = _RecordingContext(roomId?.call(), room?.call());
     unawaited(
       _enqueue(() async {
         if (_manualArmed || _candidate?.manual == true) return;

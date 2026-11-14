@@ -36,7 +36,7 @@ class SavedCloudRoom {
     'name': name,
     'listen': listen,
     'alerts': alerts,
-    if (alias != null) 'alias': alias!,
+    'alias': ?alias,
   };
 
   static List<SavedCloudRoom> restore(
@@ -60,8 +60,9 @@ class SavedCloudRoom {
               : null;
           if (id is! String ||
               !RegExp(r'^[A-Za-z0-9_-]{1,128}$').hasMatch(id) ||
-              origin == null)
+              origin == null) {
             continue;
+          }
           final room = SavedCloudRoom(
             roomId: id,
             origin: origin,
@@ -89,8 +90,9 @@ class SavedCloudRoom {
         : CloudPairing.serverOrigin(legacyOrigin);
     if (origin == null ||
         legacyRoomId == null ||
-        !RegExp(r'^[A-Za-z0-9_-]{1,128}$').hasMatch(legacyRoomId))
+        !RegExp(r'^[A-Za-z0-9_-]{1,128}$').hasMatch(legacyRoomId)) {
       return [];
+    }
     return [
       SavedCloudRoom(
         roomId: legacyRoomId,
@@ -276,8 +278,9 @@ class SavedRoomCoordinator {
       await beforeSelectionChange();
       if (_closed ||
           generation != _selectionGeneration ||
-          !_rooms.containsKey(id))
+          !_rooms.containsKey(id)) {
         return;
+      }
       _selected = id;
       await _save();
     } finally {
@@ -290,7 +293,9 @@ class SavedRoomCoordinator {
   }
 
   void _routeAudio() {
-    for (final session in _sessions.values) session.setVolume(0);
+    for (final session in _sessions.values) {
+      session.setVolume(0);
+    }
     for (final entry in _sessions.entries) {
       final chosen =
           _running &&
@@ -342,8 +347,9 @@ class SavedRoomCoordinator {
     if (_closed ||
         !_rooms.containsKey(id) ||
         _paused.contains(id) ||
-        !_busy.add(id))
+        !_busy.add(id)) {
       return;
+    }
     final generation = _generation;
     SavedRoomSession? attempt;
     try {
@@ -352,15 +358,17 @@ class SavedRoomCoordinator {
       final session = _session(id);
       attempt = session;
       await session.ensureReady();
-      if (_closed || !_rooms.containsKey(id) || _sessions[id] != session)
+      if (_closed || !_rooms.containsKey(id) || _sessions[id] != session) {
         return;
+      }
       _ready.add(id);
       if (!session.paired) {
         await removeRevoked(id);
         return;
       }
-      if (!_running || generation != _generation || _paused.contains(id))
+      if (!_running || generation != _generation || _paused.contains(id)) {
         return;
+      }
       final room = _rooms[id]!;
       if (room.listen &&
           session.online &&
@@ -468,7 +476,7 @@ class SavedRoomCoordinator {
     _problems.remove(id);
     _retryAt.remove(id);
     await session?.close();
-    if (_selected == null) _selected = _rooms.keys.firstOrNull;
+    _selected ??= _rooms.keys.firstOrNull;
     if (_rooms.isEmpty) {
       _running = false;
       _generation++;
@@ -512,10 +520,11 @@ class SavedRoomCoordinator {
     if (_problems[id] != null) return _problems[id]!;
     if (session?.connectionProblem != null) return session!.connectionProblem!;
     if (_paused.contains(id)) return 'Paused · logging out';
-    if (session?.hearing == true)
+    if (session?.hearing == true) {
       return id == _selected
           ? 'Connected · selected audio'
           : 'Connected · muted';
+    }
     if (!_running) return 'Stopped';
     if (session?.online == false) return 'Waiting for home phone';
     if (session?.liveAvailable == false) return 'Guardian · alerts only';

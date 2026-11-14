@@ -394,7 +394,7 @@ void main() {
             ),
           ],
           create: (room, changed, problem) => _Session(room.roomId, changed),
-          persist: (_, __) async {},
+          persist: (_, _) async {},
           onChanged: () {},
           beforeSelectionChange: () async {},
         ),

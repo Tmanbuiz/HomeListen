@@ -98,7 +98,7 @@ const path = require('node:path');
       await page.click('#alerts-button');
       assert.equal(await page.evaluate(()=>window.__unsubscribes),0);
       await page.click('#logout-button');
-      await page.waitForFunction(()=>document.querySelector('#room-select')?.value==='room_b');
+      await page.waitForFunction(()=>document.querySelector('#room-select')?.value==='room_b'&&JSON.parse(localStorage.getItem('homelisten-rooms-v1')).pendingLeaves.length===0&&!document.querySelector('#logout-button').disabled);
       assert.deepEqual(leaves,['room_a']);
       const state=await page.evaluate(()=>({closed:window.__pcs.map(p=>p.closed),signOuts:window.__signOuts,registry:JSON.parse(localStorage.getItem('homelisten-rooms-v1'))}));
       assert.deepEqual(state.closed,[true,false]);assert.equal(state.signOuts,0);assert.deepEqual(state.registry.rooms.map(r=>r.id),['room_b']);

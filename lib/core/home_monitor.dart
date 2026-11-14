@@ -564,8 +564,9 @@ class HomeMonitor extends ChangeNotifier {
     if (cloud?.hearing != true ||
         cloud?.online != true ||
         cloud?.liveAvailable != true) {
-      if (deviceRecording || recordingAudio || bufferingRecording)
+      if (deviceRecording || recordingAudio || bufferingRecording) {
         _interruptRecording();
+      }
     }
     if (cloud?.online == true) {
       _readStatus({
@@ -654,10 +655,11 @@ class HomeMonitor extends ChangeNotifier {
         final shown = await _channel.invokeMethod<bool>('startPlayback', {
           'text': 'Home Listen rooms connected — tap to choose or stop',
         });
-        if (shown != true)
+        if (shown != true) {
           throw StateError(
             'Allow notifications to keep listening with the screen locked.',
           );
+        }
       }
       if (epoch != _epoch || _disposed) {
         if (Platform.isAndroid && !_wantListening && !isActive) {
@@ -1960,8 +1962,9 @@ class HomeMonitor extends ChangeNotifier {
       final incoming = await AlertInbox.pending(preferences);
       if (_disposed || epoch != _historyEpoch) return;
       for (final event in incoming) {
-        if (!_events.any((e) => e.identity == event.identity))
+        if (!_events.any((e) => e.identity == event.identity)) {
           _events.add(event);
+        }
       }
       _events.sort((a, b) => b.at.compareTo(a.at));
       _pruneActivity();
@@ -2370,8 +2373,9 @@ class HomeMonitor extends ChangeNotifier {
     if (id != null &&
         _events.any(
           (e) => e.id == id && e.roomId == roomId && e.origin == origin,
-        ))
+        )) {
       return;
+    }
     _addEvent(
       ActivityKind.sound,
       title,

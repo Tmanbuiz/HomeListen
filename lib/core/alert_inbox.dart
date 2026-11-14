@@ -126,8 +126,9 @@ class AlertInbox {
             rooms.contains(row['roomId']) &&
             row['event'] is Map) {
           final event = Map<String, dynamic>.from(row['event']);
-          if (event['roomId'] != null && event['roomId'] != row['roomId'])
+          if (event['roomId'] != null && event['roomId'] != row['roomId']) {
             continue;
+          }
           events.addAll(
             ActivityEvent.restore(
               jsonEncode([
@@ -160,8 +161,9 @@ class AlertInbox {
           final raw = prefs.getString(key);
           if (raw == null) continue;
           final row = jsonDecode(raw);
-          if (row is Map && row['roomId'] == event.roomId)
+          if (row is Map && row['roomId'] == event.roomId) {
             await prefs.remove(key);
+          }
         } on FormatException {
           // Another room or interrupted write is not this event to remove.
         }

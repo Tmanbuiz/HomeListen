@@ -147,6 +147,7 @@ class CloudConnection implements SavedRoomSession {
       _away?.recordingSubscription?.exhausted == true;
   int _pcmSequence = 0;
 
+  @override
   void requestRecordingAudio(bool enabled) {
     if (recordingRequested == enabled) return;
     recordingRequested = enabled;
@@ -314,13 +315,20 @@ class CloudConnection implements SavedRoomSession {
   _offers = {};
   final Set<String> _accepting = {};
   _CloudPeer? _away;
+  @override
   Map<String, dynamic>? room;
+  @override
   String? roomId;
-  bool sharing = false, alertsEnabled = false, hearing = false, _closed = false;
+  bool sharing = false, _closed = false;
+  @override
+  bool alertsEnabled = false;
+  @override
+  bool hearing = false;
   bool _liveAudio = true, _supportsGuardian = false;
   Map<String, Object?> _detector = {};
   DateTime? lastPublished;
   String? _watchProblem, _publishProblem;
+  @override
   String? get connectionProblem => _watchProblem ?? _publishProblem;
   int _epoch = 0;
   String? inviteCode;
@@ -330,9 +338,12 @@ class CloudConnection implements SavedRoomSession {
   String _name = 'Bedroom';
   double _volume = 1;
   int get listenerCount => _peers.values.where((p) => p.connected).length;
+  @override
   bool get listening => _away != null;
   int get watcherCount => (room?['watchers'] as Map?)?.length ?? 0;
+  @override
   bool get paired => roomId != null && !home;
+  @override
   bool get liveAvailable {
     if (room?['audioAvailable'] == false) return false;
     final uid = _auth?.currentUser?.uid;
@@ -347,12 +358,14 @@ class CloudConnection implements SavedRoomSession {
     return true;
   }
 
+  @override
   bool get online =>
       room?['sharing'] == true &&
       DateTime.now().millisecondsSinceEpoch -
               ((room?['lastSeenMs'] as num?)?.toInt() ?? 0) <
           120000;
 
+  @override
   Future<void> ensureReady() =>
       _ready ??= _initialize().catchError((Object error) {
         _ready = null;
@@ -1075,6 +1088,7 @@ class CloudConnection implements SavedRoomSession {
     }
   }
 
+  @override
   Future<void> startAway(double volume) async {
     _volume = volume;
     final epoch = ++_epoch;
@@ -1151,7 +1165,7 @@ class CloudConnection implements SavedRoomSession {
       // earpiece. Nothing here chose an output, so a listener could hear
       // nothing at all. Use the phone speaker, as a room monitor should.
       unawaited(_useSpeaker());
-      peer!.remoteTrack = event.track;
+      peer.remoteTrack = event.track;
     };
     final transceiver = await peer.pc.addTransceiver(
       kind: RTCRtpMediaType.RTCRtpMediaTypeAudio,
@@ -1199,6 +1213,7 @@ class CloudConnection implements SavedRoomSession {
     }
   }
 
+  @override
   Future<void> enableAlerts() async {
     await ensureReady();
     if (roomId == null) throw StateError('Pair the home phone first.');
@@ -1230,6 +1245,7 @@ class CloudConnection implements SavedRoomSession {
     onChanged();
   }
 
+  @override
   Future<void> disableAlerts() async {
     if (roomId != null && alertsEnabled) {
       await api('/rooms/$roomId/device', null, 'DELETE');
@@ -1280,6 +1296,7 @@ class CloudConnection implements SavedRoomSession {
     onChanged();
   }
 
+  @override
   Future<void> forget() async {
     if (roomId != null) await api('/rooms/$roomId/leave', {});
     await stopAway(disableAlerts: false);
@@ -1295,6 +1312,7 @@ class CloudConnection implements SavedRoomSession {
     onChanged();
   }
 
+  @override
   void setVolume(double value) {
     _volume = value;
     final track = _away?.remoteTrack;
@@ -1330,6 +1348,7 @@ class CloudConnection implements SavedRoomSession {
     });
   }
 
+  @override
   Future<void> stopAway({bool disableAlerts = true}) async {
     _levelTimer?.cancel();
     _levelTimer = null;
@@ -1393,6 +1412,7 @@ class CloudConnection implements SavedRoomSession {
     await stream.dispose();
   }
 
+  @override
   Future<void> close() async {
     // Managed receiver connections can be removed while bootstrap or a peer
     // creation is pending. Mark them closed before the first asynchronous wait.
