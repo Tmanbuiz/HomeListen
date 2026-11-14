@@ -6,7 +6,7 @@
 
 definitions:
   env_versions: &env_versions
-    flutter: stable
+    flutter: 3.47.6
     # Pinned rather than `latest`, which Codemagic moves whenever Apple ships
     # a new Xcode, so a build that passed last week can fail untouched.
     xcode: 26.6
@@ -46,7 +46,7 @@ workflows:
     name: Android preview APK
     max_build_duration: 45
     environment:
-      flutter: stable
+      flutter: 3.47.6
     scripts:
       - name: Fetch verified sound model
         script: python3 tool/fetch_sound_model.py
