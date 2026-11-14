@@ -74,7 +74,7 @@ void main() {
       expect(find.text('A little closer to home.'), findsOneWidget);
       await tester.tap(find.text('I’ll listen on this phone'));
       await tester.pumpAndSettle();
-      expect(find.text('Your home'), findsOneWidget);
+      expect(find.text('Your rooms'), findsOneWidget);
       expect(tester.takeException(), isNull);
       for (final label in ['Activity', 'Devices', 'Settings']) {
         await tester.tap(

@@ -1,19 +1,21 @@
 {
   "name": "homelisten-viewer",
-  "version": "2.2.5",
+  "version": "2.3.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
     "check": "node --check src/main.js && node --check public/sw.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "test:browser": "node test-browser/multi-room.cjs"
   },
   "dependencies": {
     "firebase": "13.0.0"
   },
   "devDependencies": {
     "fake-indexeddb": "^6.2.4",
+    "playwright": "1.62.1",
     "vite": "^7.1.9"
   }
 }

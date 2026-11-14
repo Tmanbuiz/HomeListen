@@ -46,6 +46,169 @@ void main() {
     expect(await root.list().toList(), isEmpty);
   });
 
+  test(
+    'manual recording needs no detector verdict and excludes pre-tap audio',
+    () async {
+      recordings.feed(Int16List.fromList(List.filled(16000, 11)));
+      await recordings.drain();
+      await recordings.startManual();
+      recordings.feed(Int16List.fromList(List.filled(16000, 22)));
+      await recordings.drain();
+      expect(recordings.manualArmed, isTrue);
+      expect(recordings.manualRecording, isTrue);
+      recordings.observe('crying', now, minimumSeconds: 30, recordAudio: true);
+      recordings.feed(Int16List.fromList(List.filled(16000, 33)));
+      await recordings.drain();
+      await recordings.stopManual();
+      expect(recordings.manualArmed, isFalse);
+      final clip = recordings.clips.single;
+      expect(clip.category, 'manual');
+      expect(clip.durationMs, 2000);
+      final bytes = ByteData.sublistView(await File(clip.path).readAsBytes());
+      expect(bytes.getInt16(44, Endian.little), 22);
+      expect(bytes.getInt16(bytes.lengthInBytes - 2, Endian.little), 33);
+    },
+  );
+
+  test(
+    'a manual recording longer than the detection gap keeps all received audio',
+    () async {
+      await recordings.startManual();
+      for (var i = 0; i < 5; i++) {
+        recordings.feed(Int16List.fromList(List.filled(16000, i + 1)));
+        await recordings.drain();
+      }
+      await recordings.stop();
+      expect(recordings.clips.single.durationMs, 5000);
+      expect(recordings.manualArmed, isFalse);
+    },
+  );
+
+  test(
+    'manual recording splits at the file limit without losing room identity',
+    () async {
+      recordings = EpisodeRecordings(
+        directory: () async => root,
+        clock: () => now,
+        maximumClipSeconds: 2,
+        roomId: () => 'bedroom_one',
+        room: () => 'Bedroom',
+      );
+      await recordings.startManual();
+      for (var i = 0; i < 5; i++) {
+        recordings.feed(Int16List.fromList(List.filled(16000, i + 1)));
+        await recordings.drain();
+      }
+      await recordings.stopManual();
+      expect(recordings.clips, hasLength(3));
+      expect(
+        recordings.clips.fold<int>(0, (sum, clip) => sum + clip.durationMs),
+        5000,
+      );
+      expect(
+        recordings.clips.every(
+          (c) => c.roomId == 'bedroom_one' && c.category == 'manual',
+        ),
+        isTrue,
+      );
+    },
+  );
+
+  test(
+    'Stop cancels a pending manual start and never creates an empty audio file',
+    () async {
+      final start = recordings.startManual();
+      final stop = recordings.stop();
+      await Future.wait([start, stop]);
+      expect(recordings.manualArmed, isFalse);
+      expect(recordings.clips, isEmpty);
+      expect(
+        (await root.list().toList()).whereType<File>().where(
+          (f) => f.path.endsWith('.wav'),
+        ),
+        isEmpty,
+      );
+    },
+  );
+
+  test(
+    'automatic episode recording resumes only from later opted-in verdicts',
+    () async {
+      await recordings.startManual();
+      recordings.feed(Int16List.fromList(List.filled(16000, 1)));
+      await recordings.drain();
+      await recordings.stopManual();
+      await second(1, 'crying', enabled: false, minimum: 0);
+      expect(recordings.recording, isFalse);
+      await second(2, 'crying', minimum: 0);
+      await recordings.stop();
+      expect(recordings.clips.map((c) => c.category).toSet(), {
+        'manual',
+        'crying',
+      });
+    },
+  );
+
+  test(
+    'room identity is captured at episode start and retained across restore',
+    () async {
+      var roomId = 'room_one', room = 'Bedroom';
+      recordings = EpisodeRecordings(
+        directory: () async => root,
+        clock: () => now,
+        roomId: () => roomId,
+        room: () => room,
+      );
+      await second(0, 'crying', minimum: 0);
+      roomId = 'room_two';
+      room = 'Children room';
+      await recordings.stop();
+      final first = recordings.clips.single;
+      expect(first.roomId, 'room_one');
+      expect(first.room, 'Bedroom');
+      expect(first.exportName, startsWith('Bedroom_'));
+      await second(1, 'crying', minimum: 0);
+      await recordings.stop();
+      expect(recordings.clips.map((c) => c.roomId).toSet(), {
+        'room_one',
+        'room_two',
+      });
+      final restored = EpisodeRecordings(
+        directory: () async => root,
+        clock: () => now,
+      );
+      await restored.initialize();
+      expect(restored.clips.map((c) => c.roomId).toSet(), {
+        'room_one',
+        'room_two',
+      });
+      expect(
+        restored.clips.singleWhere((c) => c.roomId == 'room_two').room,
+        'Children room',
+      );
+      await restored.stop();
+    },
+  );
+
+  test('a size split retains the original room attribution', () async {
+    var label = 'Bedroom';
+    recordings = EpisodeRecordings(
+      directory: () async => root,
+      clock: () => now,
+      maximumClipSeconds: 2,
+      roomId: () => 'room_one',
+      room: () => label,
+    );
+    await second(0, 'crying', minimum: 0);
+    label = 'Renamed room';
+    await second(1, 'crying', minimum: 0);
+    await second(2, 'crying', minimum: 0);
+    await recordings.stop();
+    expect(recordings.clips, hasLength(2));
+    expect(recordings.clips.every((c) => c.room == 'Bedroom'), isTrue);
+    expect(recordings.clips.every((c) => c.roomId == 'room_one'), isTrue);
+  });
+
   test('short opted-in candidate is discarded on stop', () async {
     for (var i = 0; i < 29; i++) {
       await second(i, 'crying');

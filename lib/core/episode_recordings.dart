@@ -12,21 +12,31 @@ class RecordingClip {
     required this.category,
     required this.startedAt,
     required this.durationMs,
+    this.roomId,
+    this.room,
   });
 
   final String name, path, category;
   final DateTime startedAt;
   final int durationMs;
+  final String? roomId, room;
+
+  String get exportName {
+    final label = room?.replaceAll(RegExp(r'[^A-Za-z0-9]+'), '_');
+    return label == null || label.isEmpty ? name : '${label}_$name';
+  }
 
   Map<String, Object> toJson() => {
     'name': name,
     'category': category,
     'startedAt': startedAt.toIso8601String(),
     'durationMs': durationMs,
+    'roomId': ?roomId,
+    'room': ?room,
   };
 }
 
-/// Saves only opted-in sound episodes on the receiving phone.
+/// Saves opted-in sound episodes and manual recordings on the receiving phone.
 ///
 /// Feed the incoming 16 kHz mono PCM before sending its classifier verdict to
 /// [observe]. A one-second memory ring includes the first analysis window.
@@ -39,6 +49,8 @@ class EpisodeRecordings {
     required this.directory,
     this.onChanged,
     this.onError,
+    this.roomId,
+    this.room,
     DateTime Function()? clock,
     this.maximumClipSeconds = 600,
     this.maximumClips = 100,
@@ -50,6 +62,7 @@ class EpisodeRecordings {
   static const _maximumPendingSamples = sampleRate * 4;
   final Future<Directory> Function() directory;
   final DateTime Function() _clock;
+  final String? Function()? roomId, room;
   final void Function()? onChanged;
   final void Function(String)? onError;
   final int maximumClipSeconds, maximumClips, maximumBytes;
@@ -61,10 +74,44 @@ class EpisodeRecordings {
   _Candidate? _candidate;
   int _cursor = 0, _pendingSamples = 0, _serial = 0;
   bool _overflow = false;
+  bool _manualArmed = false;
+  int _manualGeneration = 0;
+  _RecordingContext? _manualContext;
 
   List<RecordingClip> get clips => List.unmodifiable(_clips);
   bool get recording => _candidate?.qualified == true;
   bool get buffering => _candidate != null && !recording;
+  bool get manualArmed => _manualArmed;
+  bool get manualRecording => _candidate?.manual == true && recording;
+
+  /// A local tap records incoming audio without requiring a sound verdict.
+  /// No audio captured before the tap is included in a manual recording.
+  Future<void> startManual() {
+    final generation = ++_manualGeneration;
+    final context = _RecordingContext(roomId?.call(), room?.call());
+    return _enqueue(() async {
+      if (generation != _manualGeneration) return;
+      await _finish();
+      await _initialize();
+      if (generation != _manualGeneration) return;
+      _ring.clear();
+      _cursor = 0;
+      _manualContext = context;
+      _manualArmed = true;
+      onChanged?.call();
+    });
+  }
+
+  Future<void> stopManual() {
+    _manualGeneration++;
+    _manualArmed = false;
+    return _enqueue(() async {
+      if (_candidate?.manual == true) await _finish();
+      _manualContext = null;
+      _ring.clear();
+      onChanged?.call();
+    });
+  }
 
   Future<void> initialize() => _enqueue(_initialize);
   Future<void> drain() => _tail;
@@ -111,6 +158,8 @@ class EpisodeRecordings {
                 category: row['category'],
                 startedAt: at,
                 durationMs: row['durationMs'],
+                roomId: row['roomId'] is String ? row['roomId'] : null,
+                room: row['room'] is String ? row['room'] : null,
               ),
             );
           }
@@ -126,6 +175,9 @@ class EpisodeRecordings {
 
   Future<void> _enqueue(Future<void> Function() action) {
     _tail = _tail.then((_) => action()).catchError((Object error) async {
+      _manualArmed = false;
+      _manualGeneration++;
+      _manualContext = null;
       await _discard();
       _ring.clear();
       onError?.call(
@@ -146,6 +198,9 @@ class EpisodeRecordings {
         _overflow = true;
         unawaited(
           _enqueue(() async {
+            _manualArmed = false;
+            _manualGeneration++;
+            _manualContext = null;
             await _discard();
             _ring.clear();
             _overflow = false;
@@ -165,6 +220,21 @@ class EpisodeRecordings {
         try {
           _cursor += copy.length;
           var candidate = _candidate;
+          if (_manualArmed && candidate == null) {
+            candidate = await _beginCandidate(
+              category: 'manual',
+              startedAt: _clock(),
+              startSample: _cursor - copy.length,
+              lastMatch: _cursor,
+              minimumSamples: 0,
+              initial: Int16List(0),
+              context: _manualContext!,
+              manual: true,
+            );
+            candidate.qualified = true;
+            onChanged?.call();
+          }
+          if (candidate?.manual == true) candidate!.lastMatch = _cursor;
           if (candidate != null && _cursor - candidate.lastMatch > gapSamples) {
             // A stalled classifier must not leave an episode recording silence
             // indefinitely. The sample clock works even without null verdicts.
@@ -200,6 +270,8 @@ class EpisodeRecordings {
                   lastMatch: candidate.lastMatch,
                   minimumSamples: 0,
                   initial: rest,
+                  context: candidate.context,
+                  manual: candidate.manual,
                 );
                 next.qualified = true;
                 onChanged?.call();
@@ -223,8 +295,11 @@ class EpisodeRecordings {
     required int minimumSeconds,
     required bool recordAudio,
   }) {
+    if (_manualArmed) return;
+    final context = _RecordingContext(roomId?.call(), room?.call());
     unawaited(
       _enqueue(() async {
+        if (_manualArmed || _candidate?.manual == true) return;
         var candidate = _candidate;
         if (candidate != null && category != candidate.category) {
           // Short unmatched windows are part of one episode. A different
@@ -260,6 +335,7 @@ class EpisodeRecordings {
             lastMatch: _cursor,
             minimumSamples: minimumSeconds.clamp(0, 300) * sampleRate,
             initial: Int16List.fromList(_ring),
+            context: context,
           );
           onChanged?.call();
         }
@@ -279,12 +355,17 @@ class EpisodeRecordings {
   }
 
   /// Finalize qualified audio; discard short, unqualified candidates.
-  Future<void> stop() => _enqueue(() async {
-    await _finish();
-    _ring.clear();
-    _cursor = 0;
-    onChanged?.call();
-  });
+  Future<void> stop() {
+    _manualGeneration++;
+    _manualArmed = false;
+    return _enqueue(() async {
+      await _finish();
+      _manualContext = null;
+      _ring.clear();
+      _cursor = 0;
+      onChanged?.call();
+    });
+  }
 
   Future<_Candidate> _beginCandidate({
     required String category,
@@ -293,6 +374,8 @@ class EpisodeRecordings {
     required int lastMatch,
     required int minimumSamples,
     required Int16List initial,
+    required _RecordingContext context,
+    bool manual = false,
   }) async {
     final temp = File(
       '${_root!.path}/.pending_${_clock().microsecondsSinceEpoch}_${_serial++}.pcm',
@@ -307,6 +390,8 @@ class EpisodeRecordings {
       lastMatch: lastMatch,
       samples: initial.length,
       minimumSamples: minimumSamples,
+      context: context,
+      manual: manual,
     );
     _candidate = candidate;
     if (initial.isNotEmpty) {
@@ -381,6 +466,8 @@ class EpisodeRecordings {
         category: candidate.category,
         startedAt: candidate.startedAt,
         durationMs: count * 1000 ~/ sampleRate,
+        roomId: candidate.context.id,
+        room: candidate.context.name,
       ),
     );
     await _prune();
@@ -524,20 +611,24 @@ class EpisodeRecordings {
     onChanged?.call();
   });
 
-  Future<void> clear() => _enqueue(() async {
-    await _discard();
-    _ring.clear();
-    await _initialize();
-    for (final clip in _clips) {
-      final file = File(clip.path);
-      if (await file.exists()) {
-        await file.delete();
+  Future<void> clear() {
+    _manualGeneration++;
+    _manualArmed = false;
+    return _enqueue(() async {
+      await _discard();
+      _ring.clear();
+      await _initialize();
+      for (final clip in _clips) {
+        final file = File(clip.path);
+        if (await file.exists()) {
+          await file.delete();
+        }
       }
-    }
-    _clips.clear();
-    await _prune();
-    onChanged?.call();
-  });
+      _clips.clear();
+      await _prune();
+      onChanged?.call();
+    });
+  }
 
   static Uint8List _bytes(Int16List samples, int count) {
     final bytes = ByteData(count * 2);
@@ -582,12 +673,21 @@ class _Candidate {
     required this.lastMatch,
     required this.samples,
     required this.minimumSamples,
+    required this.context,
+    this.manual = false,
   });
   final String category;
   final DateTime startedAt;
   final File temp;
   final RandomAccessFile file;
   final int startSample, minimumSamples;
+  final _RecordingContext context;
+  final bool manual;
   int lastMatch, samples;
   bool qualified = false;
+}
+
+class _RecordingContext {
+  const _RecordingContext(this.id, this.name);
+  final String? id, name;
 }

@@ -20,6 +20,8 @@ class ActivityEvent {
     required this.room,
     required this.at,
     this.id,
+    this.roomId,
+    this.origin,
     this.category,
     this.modelScore,
     this.modelVersion,
@@ -31,10 +33,12 @@ class ActivityEvent {
   final String title;
   final String room;
   final DateTime at;
-  final String? id, category, modelVersion;
+  final String? id, roomId, origin, category, modelVersion;
   final double? modelScore;
   final int? durationMs;
   final AlertDelivery delivery;
+
+  String get identity => '${origin ?? ''}|${roomId ?? ''}|${id ?? ''}';
 
   ActivityEvent withDelivery(AlertDelivery value) => ActivityEvent(
     kind: kind,
@@ -42,6 +46,8 @@ class ActivityEvent {
     room: room,
     at: at,
     id: id,
+    roomId: roomId,
+    origin: origin,
     category: category,
     modelScore: modelScore,
     modelVersion: modelVersion,
@@ -66,6 +72,8 @@ class ActivityEvent {
     'room': room,
     'at': at.toIso8601String(),
     'id': ?id,
+    'roomId': ?roomId,
+    'origin': ?origin,
     if (id != null) 'schemaVersion': 2,
     'category': ?category,
     'modelScore': ?modelScore,
@@ -97,6 +105,8 @@ class ActivityEvent {
               room: row['room'],
               at: at,
               id: row['id'] is String ? row['id'] : null,
+              roomId: row['roomId'] is String ? row['roomId'] : null,
+              origin: row['origin'] is String ? row['origin'] : null,
               category: row['category'] is String ? row['category'] : null,
               modelScore:
                   row['modelScore'] is num &&

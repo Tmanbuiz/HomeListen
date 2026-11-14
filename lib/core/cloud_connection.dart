@@ -21,6 +21,7 @@ import 'guardian_settings.dart';
 import 'recording_wire.dart';
 import 'recording_subscription.dart';
 import 'alert_inbox.dart';
+import 'saved_rooms.dart';
 
 /// A refusal from the server. [code] says why when the app can act on it, e.g.
 /// `totp_required` means the authenticator code has to be asked for.
@@ -104,7 +105,7 @@ FirebaseOptions _options(Map<String, dynamic> config) => FirebaseOptions(
 
 /// Firebase carries authenticated signaling and notifications. Audio is WebRTC.
 /// Only startHome() opens the microphone, after the caller shows its service.
-class CloudConnection {
+class CloudConnection implements SavedRoomSession {
   CloudConnection({
     required this.origin,
     required this.prefs,
@@ -117,10 +118,22 @@ class CloudConnection {
     this.onRecordingPcm,
     this.onRecordingVerdict,
     this.onRecordingInterrupted,
+    this.managed = false,
+    this.managedRoomId,
+    this.onOpenRoom,
   });
   final String origin;
   final SharedPreferences prefs;
   final bool home;
+
+  /// The receiver's coordinator owns saved pairing and alert preferences.
+  /// A per-room connector must never overwrite another room's selected keys.
+  final bool managed;
+  final String? managedRoomId;
+  static Future<void> _firebaseTail = Future<void>.value();
+  static Future<RemoteMessage?>? _initialMessage;
+  static final Set<String> _initialDelivered = {};
+  final void Function(String roomId)? onOpenRoom;
   final void Function() onChanged;
   final void Function(String) onProblem;
   final void Function(Int16List) onPcm;
@@ -134,7 +147,9 @@ class CloudConnection {
       _away?.recordingSubscription?.exhausted == true;
   int _pcmSequence = 0;
 
+  @override
   void requestRecordingAudio(bool enabled) {
+    if (recordingRequested == enabled) return;
     recordingRequested = enabled;
     _away?.recordingSubscription?.request(enabled);
     if (!enabled) onRecordingInterrupted?.call();
@@ -300,13 +315,20 @@ class CloudConnection {
   _offers = {};
   final Set<String> _accepting = {};
   _CloudPeer? _away;
+  @override
   Map<String, dynamic>? room;
+  @override
   String? roomId;
-  bool sharing = false, alertsEnabled = false, hearing = false, _closed = false;
+  bool sharing = false, _closed = false;
+  @override
+  bool alertsEnabled = false;
+  @override
+  bool hearing = false;
   bool _liveAudio = true, _supportsGuardian = false;
   Map<String, Object?> _detector = {};
   DateTime? lastPublished;
   String? _watchProblem, _publishProblem;
+  @override
   String? get connectionProblem => _watchProblem ?? _publishProblem;
   int _epoch = 0;
   String? inviteCode;
@@ -316,9 +338,12 @@ class CloudConnection {
   String _name = 'Bedroom';
   double _volume = 1;
   int get listenerCount => _peers.values.where((p) => p.connected).length;
+  @override
   bool get listening => _away != null;
   int get watcherCount => (room?['watchers'] as Map?)?.length ?? 0;
+  @override
   bool get paired => roomId != null && !home;
+  @override
   bool get liveAvailable {
     if (room?['audioAvailable'] == false) return false;
     final uid = _auth?.currentUser?.uid;
@@ -333,18 +358,21 @@ class CloudConnection {
     return true;
   }
 
+  @override
   bool get online =>
       room?['sharing'] == true &&
       DateTime.now().millisecondsSinceEpoch -
               ((room?['lastSeenMs'] as num?)?.toInt() ?? 0) <
           120000;
 
+  @override
   Future<void> ensureReady() =>
       _ready ??= _initialize().catchError((Object error) {
         _ready = null;
         throw error;
       });
   Future<void> _initialize() async {
+    if (_closed) return;
     if (!(Platform.isAndroid || Platform.isIOS)) {
       throw StateError('Cloud mode needs an Android phone or an iPhone.');
     }
@@ -364,49 +392,78 @@ class CloudConnection {
             : 'Add the Android Firebase app ID to the cloud server.',
       );
     }
-    if (Firebase.apps.isNotEmpty &&
-        Firebase.app().options.projectId != config['projectId']) {
-      throw StateError(
-        'Restart Home Listen after changing to a different Firebase project.',
-      );
-    }
-    if (Firebase.apps.isEmpty) {
-      await Firebase.initializeApp(options: _options(config));
-    }
-    if (_closed) return;
-    await prefs.setString('cloud_firebase_config', jsonEncode(config));
-    // Persist public client options for Android's background FCM receiver.
-    if (Platform.isAndroid) {
-      await _native.invokeMethod<void>('configureFirebase', config);
-    }
-    _auth = FirebaseAuth.instance;
-    _db = FirebaseFirestore.instance;
-    if (_auth!.currentUser == null) await _auth!.signInAnonymously();
+    // All room connectors share one anonymous identity. Serialize bootstrap so
+    // concurrent rooms cannot initialize competing default apps or sign-ins.
+    await (_firebaseTail = _firebaseTail.catchError((Object _) {}).then((
+      _,
+    ) async {
+      if (_closed) return;
+      if (Firebase.apps.isNotEmpty &&
+          Firebase.app().options.projectId != config['projectId']) {
+        throw StateError(
+          'Restart Home Listen after changing to a different Firebase project.',
+        );
+      }
+      if (Firebase.apps.isEmpty) {
+        await Firebase.initializeApp(options: _options(config));
+      }
+      if (_closed) return;
+      await prefs.setString('cloud_firebase_config', jsonEncode(config));
+      if (Platform.isAndroid) {
+        await _native.invokeMethod<void>('configureFirebase', config);
+      }
+      _auth = FirebaseAuth.instance;
+      _db = FirebaseFirestore.instance;
+      if (_auth!.currentUser == null) await _auth!.signInAnonymously();
+    }));
     if (_closed) return;
     FirebaseMessaging.onBackgroundMessage(homeListenBackgroundMessage);
-    roomId = prefs.getString(home ? 'cloud_home_room' : 'cloud_paired_room');
-    Future<void> receive(RemoteMessage message) async {
+    roomId = managed
+        ? managedRoomId
+        : prefs.getString(home ? 'cloud_home_room' : 'cloud_paired_room');
+    Future<void> receive(RemoteMessage message, {bool opened = false}) async {
       final data = Map<String, dynamic>.from(message.data);
       if (_closed ||
           home ||
-          AlertInbox.parse(data, roomId, DateTime.now()) == null) {
+          data['roomId'] != roomId ||
+          AlertInbox.parseSaved(data, prefs, DateTime.now()) == null) {
         return;
       }
       await AlertInbox.save(prefs, data);
-      if (!_closed) onAlert(data);
+      if (!_closed) {
+        onAlert(data);
+        if (opened && roomId != null) onOpenRoom?.call(roomId!);
+      }
     }
 
     _messages = FirebaseMessaging.onMessage.listen(
       (m) => unawaited(receive(m)),
     );
     _openedMessages = FirebaseMessaging.onMessageOpenedApp.listen(
-      (m) => unawaited(receive(m)),
+      (m) => unawaited(receive(m, opened: true)),
     );
-    final initial = await FirebaseMessaging.instance.getInitialMessage();
-    if (initial != null) await receive(initial);
+    final initial = await (_initialMessage ??= FirebaseMessaging.instance
+        .getInitialMessage());
+    final initialKey =
+        '$origin|$roomId|${initial?.messageId ?? initial?.data['id']}';
+    if (initial != null &&
+        !_closed &&
+        !home &&
+        initial.data['roomId'] == roomId &&
+        AlertInbox.parseSaved(
+              Map<String, dynamic>.from(initial.data),
+              prefs,
+              DateTime.now(),
+            ) !=
+            null &&
+        _initialDelivered.add(initialKey)) {
+      await receive(initial, opened: true);
+    }
+    if (_closed) return;
     alertsEnabled =
         !home &&
         roomId != null &&
+        !managed &&
         prefs.getBool('cloud_alerts_enabled') == true;
     if (roomId != null) _watchRoom();
     _lease = Timer.periodic(const Duration(seconds: 10), (_) {
@@ -493,9 +550,10 @@ class CloudConnection {
       'secret': invite.secret,
       'label': await _deviceName(),
     });
+    if (_closed) throw StateError('This connection was closed.');
     roomId = invite.roomId;
     room = Map<String, dynamic>.from(result['room'] as Map);
-    await prefs.setString('cloud_paired_room', roomId!);
+    if (!managed) await prefs.setString('cloud_paired_room', roomId!);
     _watchRoom();
   }
 
@@ -507,9 +565,10 @@ class CloudConnection {
       'code': code,
       'label': await _deviceName(),
     });
+    if (_closed) throw StateError('This connection was closed.');
     roomId = result['roomId'] as String;
     room = Map<String, dynamic>.from(result['room'] as Map);
-    await prefs.setString('cloud_paired_room', roomId!);
+    if (!managed) await prefs.setString('cloud_paired_room', roomId!);
     _watchRoom();
   }
 
@@ -668,8 +727,10 @@ class CloudConnection {
       roomId = null;
       room = null;
       alertsEnabled = false;
-      await prefs.remove('cloud_paired_room');
-      await prefs.setBool('cloud_alerts_enabled', false);
+      if (!managed) {
+        await prefs.remove('cloud_paired_room');
+        await prefs.setBool('cloud_alerts_enabled', false);
+      }
     }
     onProblem('Cloud pairing was removed or the server rules need setup.');
     onChanged();
@@ -819,6 +880,7 @@ class CloudConnection {
   Future<void> startGuardian() async {
     final epoch = ++_epoch;
     await ensureReady();
+    if (epoch != _epoch || _closed) return;
     if (!_supportsGuardian) {
       throw StateError(
         'Update the Home Listen backend for remote Guardian alerts. Local monitoring continues.',
@@ -847,8 +909,7 @@ class CloudConnection {
         unawaited(
           _publish(true).catchError((Object _) {
             if (_closed || !sharing) return;
-            _publishProblem =
-                'Home phone cloud connection lost. Reconnecting; local monitoring continues.';
+            _publishProblem = 'Home phone cloud connection lost. Reconnecting; local monitoring continues.';
             onChanged();
           }),
         );
@@ -1027,10 +1088,12 @@ class CloudConnection {
     }
   }
 
+  @override
   Future<void> startAway(double volume) async {
     _volume = volume;
     final epoch = ++_epoch;
     await ensureReady();
+    if (epoch != _epoch || _closed) return;
     if (roomId == null) throw StateError('Pair your home phone first.');
     // Left alone, WebRTC plays a call as a phone call: the communication
     // stream, with the call volume curve and voice filtering, which sounds thin
@@ -1052,7 +1115,9 @@ class CloudConnection {
         // Fall back to the default route rather than refuse to listen.
       }
     }
+    if (epoch != _epoch || _closed) return;
     final data = await api('/rooms/$roomId/sessions', {});
+    if (epoch != _epoch || _closed) return;
     final ice = await api('/rooms/$roomId/ice', {});
     if (epoch != _epoch || _closed) return;
     _CloudPeer? peer;
@@ -1084,23 +1149,49 @@ class CloudConnection {
     }
     _away = peer;
     await _receiveRecordingChannel(peer);
+    if (epoch != _epoch || _closed || peer.closed) {
+      await peer.close();
+      return;
+    }
     _startLevels(peer);
     peer.pc.onTrack = (event) {
-      event.track.enabled = true;
-      event.track.enabled = _volume > 0;
-      unawaited(Helper.setVolume(_volume, event.track));
+      final current =
+          !peer!.closed && _away == peer && epoch == _epoch && !_closed;
+      event.track.enabled = current && _volume > 0;
+      unawaited(Helper.setVolume(current ? _volume : 0, event.track));
+      if (!current) return;
       // WebRTC puts a call into communication mode, and Android then sends it
       // to a connected Bluetooth headset (at call volume) or to the quiet
       // earpiece. Nothing here chose an output, so a listener could hear
       // nothing at all. Use the phone speaker, as a room monitor should.
       unawaited(_useSpeaker());
-      peer!.remoteTrack = event.track;
+      peer.remoteTrack = event.track;
     };
-    await peer.pc.addTransceiver(
+    final transceiver = await peer.pc.addTransceiver(
       kind: RTCRtpMediaType.RTCRtpMediaTypeAudio,
       init: RTCRtpTransceiverInit(direction: TransceiverDirection.RecvOnly),
     );
+    if (epoch != _epoch || _closed || peer.closed) {
+      await peer.close();
+      return;
+    }
+    // Native WebRTC may render the first packet before Dart receives onTrack.
+    // Both pinned backends can address this receiver track before negotiation.
+    final incoming = transceiver.receiver.track;
+    if (incoming != null) {
+      incoming.enabled = false;
+      await Helper.setVolume(0, incoming);
+      peer.remoteTrack = incoming;
+    }
+    if (epoch != _epoch || _closed || peer.closed) {
+      await peer.close();
+      return;
+    }
     final offer = await peer.pc.createOffer();
+    if (epoch != _epoch || _closed || peer.closed) {
+      await peer.close();
+      return;
+    }
     await peer.pc.setLocalDescription(offer);
     if (epoch != _epoch || _closed) {
       await peer.close();
@@ -1122,6 +1213,7 @@ class CloudConnection {
     }
   }
 
+  @override
   Future<void> enableAlerts() async {
     await ensureReady();
     if (roomId == null) throw StateError('Pair the home phone first.');
@@ -1149,16 +1241,17 @@ class CloudConnection {
     }
     await api('/rooms/$roomId/device', {'kind': 'fcm', 'token': token});
     alertsEnabled = true;
-    await prefs.setBool('cloud_alerts_enabled', true);
+    if (!managed) await prefs.setBool('cloud_alerts_enabled', true);
     onChanged();
   }
 
+  @override
   Future<void> disableAlerts() async {
     if (roomId != null && alertsEnabled) {
       await api('/rooms/$roomId/device', null, 'DELETE');
     }
     alertsEnabled = false;
-    await prefs.setBool('cloud_alerts_enabled', false);
+    if (!managed) await prefs.setBool('cloud_alerts_enabled', false);
     onChanged();
   }
 
@@ -1203,6 +1296,7 @@ class CloudConnection {
     onChanged();
   }
 
+  @override
   Future<void> forget() async {
     if (roomId != null) await api('/rooms/$roomId/leave', {});
     await stopAway(disableAlerts: false);
@@ -1211,11 +1305,14 @@ class CloudConnection {
     roomId = null;
     room = null;
     alertsEnabled = false;
-    await prefs.remove('cloud_paired_room');
-    await prefs.setBool('cloud_alerts_enabled', false);
+    if (!managed) {
+      await prefs.remove('cloud_paired_room');
+      await prefs.setBool('cloud_alerts_enabled', false);
+    }
     onChanged();
   }
 
+  @override
   void setVolume(double value) {
     _volume = value;
     final track = _away?.remoteTrack;
@@ -1251,6 +1348,7 @@ class CloudConnection {
     });
   }
 
+  @override
   Future<void> stopAway({bool disableAlerts = true}) async {
     _levelTimer?.cancel();
     _levelTimer = null;
@@ -1314,7 +1412,11 @@ class CloudConnection {
     await stream.dispose();
   }
 
+  @override
   Future<void> close() async {
+    // Managed receiver connections can be removed while bootstrap or a peer
+    // creation is pending. Mark them closed before the first asynchronous wait.
+    if (managed) _closed = true;
     await stopHome();
     await stopAway(disableAlerts: false);
     _closed = true;

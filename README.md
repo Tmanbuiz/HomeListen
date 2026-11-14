@@ -18,6 +18,7 @@ This new repository builds on the owner's [PhoneListen](https://github.com/Tmanb
 - Optional Tailscale mode for native Android/iOS listening.
 - Optional Home Assistant integration through MQTT 5/Mosquitto, with sound events, separate capture/detector health, House modes and an opt-in remote Stop. Matter devices respond through Home Assistant automations; setup and ready-to-copy blueprints are in [Smart home](docs/SMART_HOME.md).
 - Automated API, listener, rules, Flutter interface and protocol checks; GitHub Actions produces Android APK artifacts.
+- Cloud receiving devices can save multiple rooms, keep their live connections open, and hear only the selected room. Logout removes only this device from that room. Optional manual recordings save the selected room locally; see [2.3.0 room switching and recording](docs/RELEASE_2_3_0.md).
 
 Credentials are blank. Follow [SETUP.md](SETUP.md) to deploy your server and enter its address in the app.
 
