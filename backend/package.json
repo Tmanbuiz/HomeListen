@@ -1,6 +1,6 @@
 {
   "name": "homelisten-cloud",
-  "version": "2.2.5",
+  "version": "2.3.1",
   "private": true,
   "type": "module",
   "engines": { "node": ">=22" },

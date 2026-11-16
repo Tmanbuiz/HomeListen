@@ -34,11 +34,12 @@ export class RoomRegistry {
       return true;
     } catch (error) { this.onError(error); return false; }
   }
-  add(id, name = "Your room") {
+  add(id, name = "Your room", { select = true } = {}) {
     if (!validId(id)) throw new Error("Invalid room reference.");
     const row = this.rooms.get(id) ?? { id, name: cleanName(name), listen: true, alerts: false };
     this.rooms.set(id, { ...row, name: cleanName(name) }); this.pendingLeaves.delete(id);
-    this.selected = id; this.save(); return this.rooms.get(id);
+    if (select) this.selected = id;
+    this.save(); return this.rooms.get(id);
   }
   update(id, changes) {
     const row = this.rooms.get(id); if (!row) return;

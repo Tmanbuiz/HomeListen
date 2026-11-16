@@ -32,13 +32,16 @@ export class FirestoreStore {
       "/databases/(default)/documents";
     this.name = "projects/" + env.FIREBASE_PROJECT_ID + "/databases/(default)/documents/";
   }
-  async call(path, options = {}) {
+  async call(path, options = {}, beforeSend = null) {
     const token = await serviceToken(this.env);
+    // Authorization may have waited for a service-token refresh. A deadline
+    // guard must run after that wait, immediately before sending the write.
+    if (beforeSend) beforeSend();
     const response = await fetch(this.root + path, {
       ...options,
       headers: { authorization: "Bearer " + token, "content-type": "application/json" }
     });
-    if (response.status === 404) return null;
+    if (response.status === 404 && (options.method ?? "GET") === "GET" && path.startsWith("/")) return null;
     const body = await response.json();
     if (!response.ok) {
       const status = ["FAILED_PRECONDITION", "ALREADY_EXISTS", "ABORTED"].includes(body.error?.status)
@@ -86,6 +89,45 @@ export class FirestoreStore {
         { update: { name: this.name + "roomInvites/" + id, fields: fields(invitation) } }
       ] })
     });
+  }
+  async putShareInvitation(id, room, indexPath, index, invitePath, invitation, previous = null) {
+    // One pending code per issuer. Guard the room and issuer index together,
+    // so leaving, role changes, redemption and renewal cannot race this issue.
+    const writes = [
+      { update: { name: this.name + "rooms/" + id,
+        fields: fields({ invitationEpoch: room.data.invitationEpoch ?? 0,
+          shareInviteEpochs: { ...room.data.shareInviteEpochs, [invitation.issuerUid]: invitation.issuerEpoch } }) },
+        updateMask: { fieldPaths: ["invitationEpoch", "shareInviteEpochs"] }, currentDocument: { updateTime: room.version } },
+      { update: { name: this.name + indexPath, fields: fields({
+        kind: "away-index", roomId: id, issuerUid: invitation.issuerUid,
+        pendingHash: invitation.secretHash, expiresAt: invitation.expiresAt
+      }) }, currentDocument: index ? { updateTime: index.version } : { exists: false } },
+      { update: { name: this.name + invitePath, fields: fields(invitation) }, currentDocument: { exists: false } }
+    ];
+    // Consumed receipts survive renewal for same-phone retries until expiry.
+    if (previous && !previous.data.receiverUid) writes.push({
+      delete: this.name + previous.path, currentDocument: { updateTime: previous.version }
+    });
+    await this.call(":commit", { method: "POST", body: JSON.stringify({ writes }) });
+  }
+  async consumeShareInvitation(id, room, data, invitePath, invite, indexPath, index, uid, now) {
+    // Check the clock again at the write boundary, rather than reusing a time
+    // captured before the reads or a conflicting attempt.
+    const requireFresh = () => {
+      if (invite.data.expiresAt.getTime() <= now()) {
+        throw new HttpError(403, "This pairing code has expired. Ask for a new shared link.", "invite_expired");
+      }
+    };
+    requireFresh();
+    await this.call(":commit", { method: "POST", body: JSON.stringify({ writes: [
+      { update: { name: this.name + "rooms/" + id, fields: fields(data) },
+        currentDocument: { updateTime: room.version } },
+      { update: { name: this.name + invitePath,
+        fields: fields({ ...invite.data, receiverUid: uid, receiverEpoch: data.shareInviteEpochs[uid] }) },
+        currentDocument: { updateTime: invite.version } },
+      { update: { name: this.name + indexPath, fields: fields({ pendingHash: null }) },
+        updateMask: { fieldPaths: ["pendingHash"] }, currentDocument: { updateTime: index.version } }
+    ] }) }, requireFresh);
   }
   async openSession(id, room, sid, session) {
     const activeSessions = { ...room.data.activeSessions, [session.viewerUid]: sid };
@@ -139,16 +181,27 @@ export class FirestoreStore {
         }
       })
     });
-    return result.filter((item) => item.document).map((item) => item.document.name.slice(this.name.length));
+    return result.filter((item) => item.document).map(({ document }) => ({
+      path: document.name.slice(this.name.length), version: document.updateTime
+    }));
   }
   async cleanup(now) {
-    const paths = [];
-    for (const collection of ["candidates", "sessions", "roomInvites", "alertReceipts", "joinThrottle"]) {
-      paths.push(...await this.expired(collection, now, 100));
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const documents = [];
+      for (const collection of ["candidates", "sessions", "roomInvites", "alertReceipts", "joinThrottle"]) {
+        documents.push(...await this.expired(collection, now, 100));
+      }
+      if (!documents.length) return 0;
+      try {
+        // A stable issuer index (or home link) may have been renewed since the
+        // query. Delete only the expired revisions we actually examined.
+        await this.call(":commit", {
+          method: "POST", body: JSON.stringify({ writes: documents.map(({ path, version }) => ({
+            delete: this.name + path, currentDocument: { updateTime: version }
+          })) })
+        });
+        return documents.length;
+      } catch (error) { if (error.status !== 409 || attempt === 2) throw error; }
     }
-    if (paths.length) await this.call(":commit", {
-      method: "POST", body: JSON.stringify({ writes: paths.map((path) => ({ delete: this.name + path })) })
-    });
-    return paths.length;
   }
 }

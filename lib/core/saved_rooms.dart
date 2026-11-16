@@ -242,31 +242,57 @@ class SavedRoomCoordinator {
     if (_running) unawaited(_connect(id));
   }
 
-  Future<void> add(SavedCloudRoom room, {SavedRoomSession? session}) async {
-    if (_closed) return;
-    final origin = _rooms.values.firstOrNull?.origin;
-    if (origin != null && origin != room.origin) {
-      throw ArgumentError('Use a room from the configured cloud server.');
-    }
-    final previous = _rooms[room.roomId];
-    _rooms[room.roomId] = previous?.copyWith(name: room.name) ?? room;
-    if (session != null) {
-      final old = _sessions[room.roomId];
-      if (old != null && old != session) {
-        // Re-pairing an already saved room selects its existing live peer.
-        await session.close();
-      } else {
-        _sessions[room.roomId] = session;
+  Future<bool> add(
+    SavedCloudRoom room, {
+    SavedRoomSession? session,
+    bool Function()? isCurrent,
+  }) async {
+    bool current() => !_closed && isCurrent?.call() != false;
+    var incomingClosed = false;
+    try {
+      if (!current()) return false;
+      final origin = _rooms.values.firstOrNull?.origin;
+      if (origin != null && origin != room.origin) {
+        throw ArgumentError('Use a room from the configured cloud server.');
       }
-      _ready.add(room.roomId);
+      final previous = _rooms[room.roomId];
+      _rooms[room.roomId] = previous?.copyWith(name: room.name) ?? room;
+      if (session != null) {
+        final old = _sessions[room.roomId];
+        if (old != null && old != session) {
+          // Re-pairing a saved room retains its original live peer.
+          incomingClosed = true;
+          await session.close();
+          if (!current()) return false;
+        } else {
+          _sessions[room.roomId] = session;
+        }
+        _ready.add(room.roomId);
+      }
+      await select(room.roomId, isCurrent: isCurrent);
+      if (!current()) return false;
+      await _save();
+      if (!current()) return false;
+      if (_running) await _connect(room.roomId);
+      return current();
+    } finally {
+      // The coordinator owns incoming transports once add() is called, even
+      // when a logout cancels adoption while another await is outstanding.
+      if (session != null &&
+          !incomingClosed &&
+          _sessions[room.roomId] != session) {
+        await session.close();
+      }
     }
-    await select(room.roomId);
-    await _save();
-    if (_running) await _connect(room.roomId);
   }
 
-  Future<void> select(String id) async {
-    if (_closed || !_rooms.containsKey(id) || id == _selected) return;
+  Future<void> select(String id, {bool Function()? isCurrent}) async {
+    if (_closed ||
+        isCurrent?.call() == false ||
+        !_rooms.containsKey(id) ||
+        id == _selected) {
+      return;
+    }
     final generation = ++_selectionGeneration;
     _selecting = true;
     // Mute before awaiting file finalization; there is never overlapping audio.
@@ -277,6 +303,7 @@ class SavedRoomCoordinator {
     try {
       await beforeSelectionChange();
       if (_closed ||
+          isCurrent?.call() == false ||
           generation != _selectionGeneration ||
           !_rooms.containsKey(id)) {
         return;
@@ -422,12 +449,12 @@ class SavedRoomCoordinator {
     }
   }
 
-  Future<void> logout(String id) =>
-      _loggingOut[id] ??= _logout(id).whenComplete(() {
+  Future<void> logout(String id, {Future<void>? beforeLeave}) =>
+      _loggingOut[id] ??= _logout(id, beforeLeave).whenComplete(() {
         _loggingOut.remove(id);
       });
 
-  Future<void> _logout(String id) async {
+  Future<void> _logout(String id, Future<void>? beforeLeave) async {
     if (_closed || !_rooms.containsKey(id)) return;
     final session = _session(id);
     _paused.add(id);
@@ -441,7 +468,7 @@ class SavedRoomCoordinator {
     // /leave must succeed before dropping the saved authorization. Offline
     // failures keep the room visible and paused for an explicit retry.
     try {
-      await Future.wait([finishing, stopping, _save()]);
+      await Future.wait([finishing, stopping, _save(), ?beforeLeave]);
       await session.ensureReady();
       if (_closed || _sessions[id] != session) return;
       await session.forget();

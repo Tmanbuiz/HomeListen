@@ -6,6 +6,7 @@ import UserNotifications
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private var recordingChannel: FlutterMethodChannel?
   private var exportingRecording = false
+  private var sharingPairingLink = false
 
   override func application(
     _ application: UIApplication,
@@ -28,6 +29,8 @@ import UserNotifications
         return
       }
       switch call.method {
+      case "sharePairingLink":
+        self.sharePairingLink(call.arguments, result: result)
       case "recordingsDirectory":
         do {
           result(try self.recordingsDirectory().path)
@@ -90,7 +93,7 @@ import UserNotifications
 
   private func exportRecording(_ arguments: Any?, result: @escaping FlutterResult) {
     do {
-      guard !exportingRecording, let url = try recordingFile(arguments),
+      guard !exportingRecording, !sharingPairingLink, let url = try recordingFile(arguments),
             let controller = activeController(), controller.viewIfLoaded?.window != nil else {
         result(FlutterError(code: "export_unavailable", message: "Open Home Listen and select an existing recording.", details: nil))
         return
@@ -117,5 +120,42 @@ import UserNotifications
     } catch {
       result(FlutterError(code: "export_failed", message: "The recording is no longer available.", details: nil))
     }
+  }
+
+  private func sharePairingLink(_ arguments: Any?, result: @escaping FlutterResult) {
+    guard !sharingPairingLink, !exportingRecording,
+          let arguments = arguments as? [String: Any],
+          let link = arguments["link"] as? String, link.count <= 2048,
+          let room = arguments["room"] as? String, room.count <= 128,
+          let url = URLComponents(string: link), url.scheme == "https",
+          let host = url.host, !host.isEmpty, url.user == nil, url.password == nil,
+          let fragment = url.fragment,
+          fragment.range(of: #"^pair=[A-Za-z0-9_-]{16,128}\.[A-Za-z0-9_-]{43}$"#, options: .regularExpression) != nil,
+          let controller = activeController(), controller.viewIfLoaded?.window != nil else {
+      result(FlutterError(code: "share_unavailable", message: "Open Home Listen and create a current pairing code.", details: nil))
+      return
+    }
+    sharingPairingLink = true
+    let sheet = UIActivityViewController(
+      activityItems: ["Join \(room) on Home Listen:\n\(link)"], applicationActivities: nil
+    )
+    sheet.completionWithItemsHandler = { [weak self] _, completed, _, error in
+      self?.sharingPairingLink = false
+      if error != nil {
+        result(FlutterError(code: "share_failed", message: "Sharing is unavailable. Copy the link instead.", details: nil))
+      } else {
+        result(completed)
+      }
+    }
+    // iPad requires an anchor even though the Flutter action is not a native button.
+    if let popover = sheet.popoverPresentationController {
+      popover.sourceView = controller.view
+      popover.sourceRect = CGRect(
+        x: controller.view.bounds.midX, y: controller.view.bounds.midY,
+        width: 1, height: 1
+      )
+      popover.permittedArrowDirections = []
+    }
+    controller.present(sheet, animated: true)
   }
 }

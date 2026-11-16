@@ -15,6 +15,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'cloud_pairing.dart';
+import 'away_room_invite.dart';
 import 'cloud_request.dart';
 import 'recovering_watch.dart';
 import 'guardian_settings.dart';
@@ -72,9 +73,10 @@ Future<String> _deviceName() async {
 }
 
 class CloudApiException implements Exception {
-  CloudApiException(this.message, [this.code]);
+  CloudApiException(this.message, [this.code, this.statusCode]);
   final String message;
   final String? code;
+  final int? statusCode;
   @override
   String toString() => message;
 }
@@ -325,6 +327,10 @@ class CloudConnection implements SavedRoomSession {
   @override
   bool hearing = false;
   bool _liveAudio = true, _supportsGuardian = false;
+  bool _supportsAwayInvites = false;
+  AwayInvitePermission? _shareInviteRefusal;
+  String? _refusedInviteEpoch, _refusedInviteUid;
+  AwayInviteRoom? _refusedInviteTarget;
   Map<String, Object?> _detector = {};
   DateTime? lastPublished;
   String? _watchProblem, _publishProblem;
@@ -343,6 +349,47 @@ class CloudConnection implements SavedRoomSession {
   int get watcherCount => (room?['watchers'] as Map?)?.length ?? 0;
   @override
   bool get paired => roomId != null && !home;
+  String? get memberUid => _auth?.currentUser?.uid;
+  String? get shareInviteEpoch {
+    final epochs = room?['shareInviteEpochs'];
+    final value = epochs is Map ? epochs[memberUid] : null;
+    return value is String ? value : null;
+  }
+
+  AwayInvitePermission get roomInvitePermission {
+    final permission = awayInvitePermission(
+      supported: _supportsAwayInvites,
+      home: home,
+      closed: _closed,
+      uid: memberUid,
+      roomId: roomId,
+      room: room,
+    );
+    if (permission == AwayInvitePermission.allowed &&
+        _shareInviteRefusal != null &&
+        memberUid == _refusedInviteUid &&
+        shareInviteEpoch == _refusedInviteEpoch &&
+        roomId == _refusedInviteTarget?.roomId &&
+        room?['generation'] == _refusedInviteTarget?.generation &&
+        (room?['invitationEpoch'] ?? 0) ==
+            _refusedInviteTarget?.invitationEpoch) {
+      return _shareInviteRefusal!;
+    }
+    return permission;
+  }
+
+  AwayInviteRoom? get roomInviteTarget {
+    if (roomInvitePermission != AwayInvitePermission.allowed) return null;
+    final name = room?['roomName'];
+    return AwayInviteRoom(
+      origin: origin,
+      roomId: roomId!,
+      name: name is String && name.trim().isNotEmpty ? name : 'Home phone',
+      generation: room!['generation'] as int,
+      invitationEpoch: room!['invitationEpoch'] as int? ?? 0,
+    );
+  }
+
   @override
   bool get liveAvailable {
     if (room?['audioAvailable'] == false) return false;
@@ -381,6 +428,7 @@ class CloudConnection implements SavedRoomSession {
         .timeout(const Duration(seconds: 15));
     final data = jsonDecode(response.body) as Map<String, dynamic>;
     _supportsGuardian = (data['features'] as Map?)?['guardian'] == true;
+    _supportsAwayInvites = (data['features'] as Map?)?['awayInvites'] == true;
     if (response.statusCode != 200) {
       throw StateError(data['error'] ?? 'The cloud server is not ready.');
     }
@@ -516,6 +564,7 @@ class CloudConnection implements SavedRoomSession {
       throw CloudApiException(
         (result['error'] as String?) ?? 'Cloud connection failed.',
         result['code'] as String?,
+        response.statusCode,
       );
     }
     return result;
@@ -540,6 +589,72 @@ class CloudConnection implements SavedRoomSession {
       result['secret'] as String,
     ).toCode();
     return inviteCode!;
+  }
+
+  /// A paired caregiver issues a separate one-use invitation. This never calls
+  /// createHome(), opens the microphone, or changes any receiving session.
+  Future<AwayRoomInvite> createSharedInvite(AwayInviteRoom target) async {
+    final requestUid = memberUid;
+    final requestIssuerEpoch = shareInviteEpoch;
+    bool current() =>
+        roomInvitePermission == AwayInvitePermission.allowed &&
+        memberUid == requestUid &&
+        origin == target.origin &&
+        roomId == target.roomId &&
+        room?['generation'] == target.generation &&
+        (room?['invitationEpoch'] ?? 0) == target.invitationEpoch;
+    if (!current()) {
+      throw const AwayInviteException(
+        'Room access changed. Open the room again.',
+      );
+    }
+    void refuse(AwayInvitePermission permission) {
+      _shareInviteRefusal = permission;
+      _refusedInviteUid = requestUid;
+      _refusedInviteEpoch = requestIssuerEpoch;
+      _refusedInviteTarget = target;
+      onChanged();
+    }
+
+    try {
+      final response = await api('/rooms/${target.roomId}/share-invite', {});
+      if (!current()) {
+        throw const AwayInviteException(
+          'Room access changed. Open the room again.',
+        );
+      }
+      return AwayRoomInvite.fromResponse(target, response, DateTime.now());
+    } on CloudApiException catch (problem) {
+      switch (awayInviteFailure(
+        statusCode: problem.statusCode,
+        code: problem.code,
+      )) {
+        case AwayInviteFailure.unsupported:
+          _supportsAwayInvites = false;
+          onChanged();
+          throw const AwayInviteException(
+            'Update this cloud server to invite from a paired phone.',
+          );
+        case AwayInviteFailure.accessChanged:
+          refuse(AwayInvitePermission.unavailable);
+          throw const AwayInviteException(
+            'Room access changed. Ask the home phone owner to check or renew this phone’s access.',
+          );
+        case AwayInviteFailure.restricted:
+          refuse(AwayInvitePermission.restricted);
+          throw const AwayInviteException(
+            'Only a permanent caregiver can invite another phone.',
+          );
+        case AwayInviteFailure.roomFull:
+          throw const AwayInviteException(
+            'This room already has five paired phones. Remove a phone at home before inviting another.',
+          );
+        case AwayInviteFailure.retry:
+          throw const AwayInviteException(
+            'Could not create a pairing code. Check your connection and try again.',
+          );
+      }
+    }
   }
 
   Future<void> join(CloudPairing invite) async {
@@ -654,6 +769,11 @@ class CloudConnection implements SavedRoomSession {
         final uid = _auth!.currentUser!.uid;
         if (data == null ||
             (!home && (data['members'] as Map?)?[uid] != true)) {
+          // Clear receiver invitation eligibility before asynchronous teardown.
+          if (!home) {
+            room = null;
+            onChanged();
+          }
           unawaited(_revoked());
           return;
         }

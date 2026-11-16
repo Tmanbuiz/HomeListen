@@ -16,7 +16,7 @@
   <main class="shell">
     <header><img src="/icon.svg" alt="" width="44" height="44"><div><strong>Home Listen</strong><span>A little closer to home.</span></div><span class="badge">Listening phone</span></header>
     <div class="account-bar" aria-label="Browser connection controls">
-      <span id="web-version">Web 2.3.0 · update 1</span>
+      <span id="web-version">Web 2.3.1 · update 1</span>
       <button id="forget-button" class="small secondary" type="button" hidden>Forget selected room</button>
       <button id="logout-button" class="small secondary" type="button" disabled>Log out of this room</button>
     </div>
@@ -33,14 +33,17 @@
       <p class="fine">Other rooms keep their live connections and stay muted. Keeping several rooms connected uses more battery and data. Recordings follow the selected room.</p>
       <ul id="room-connections" aria-label="Room connections"></ul>
       <button id="add-room-button" class="secondary" type="button">Add another room</button>
+      <button id="share-room-button" class="secondary" type="button" disabled>Share this room</button>
+      <p id="share-room-hint" class="fine"></p>
     </section>
     <section id="pair-panel" class="card" hidden>
       <div class="card-heading"><span class="step">01</span><h2>Add a room</h2></div>
       <button id="cancel-pair-button" class="small secondary" type="button" hidden>Back to saved rooms</button>
-      <p>On the home phone, open <strong>Devices → Show pairing code</strong>. Open its link here, or paste it below.</p>
+      <p>Get a pairing code from the home phone, or choose <strong>Share this room</strong> on an already-paired away phone. Scan its QR code or paste its link below.</p>
+      <button id="scan-room-button" class="secondary" type="button">Scan pairing code</button>
       <form id="pair-form">
         <label for="pair-code">Pairing link</label>
-        <textarea id="pair-code" rows="3" placeholder="Paste the link from your home phone" autocomplete="off" autocapitalize="off" spellcheck="false" required></textarea>
+        <textarea id="pair-code" rows="3" placeholder="Paste a Home Listen pairing link" autocomplete="off" autocapitalize="off" spellcheck="false" required></textarea>
         <button id="pair-button" type="submit">Pair this phone <span aria-hidden="true">↗</span></button>
       </form>
       <p class="fine">Pairing links expire after 10 minutes. Only people with a link can pair.</p>
@@ -84,6 +87,23 @@
     <section class="activity"><h2>While you’re away</h2><p id="empty-activity">Sound alerts and connection changes appear here.</p><ol id="events"></ol></section>
     <footer>Microphone sharing stays under your control at home.<br>Built by WianTribe. Sound detection can miss or mistake sounds; do not rely on it as an emergency alarm.</footer>
   </main>
+  <dialog id="room-share-dialog" aria-labelledby="share-room-name" class="pairing-dialog">
+    <h2 id="share-room-name">Share this room</h2>
+    <p>On the new phone, open Home Listen → Devices → Scan pairing code, or open the link. Both phones keep their own connection. The home phone owner can remove access.</p>
+    <div id="share-qr" class="pairing-qr"></div>
+    <p id="share-expiry" role="status" aria-live="polite"></p>
+    <label id="share-link-label" for="share-link">Private pairing link</label>
+    <textarea id="share-link" readonly rows="3" spellcheck="false" autocomplete="off" aria-label="Private pairing link"></textarea>
+    <div class="pairing-actions"><button id="copy-room-link" type="button">Copy link</button><button id="send-room-link" class="secondary" type="button">Share link</button><button id="renew-room-link" class="secondary" type="button">Create new code</button></div>
+    <p id="share-feedback" role="status" aria-live="polite"></p>
+    <button id="close-room-share" class="secondary" type="button">Close</button>
+  </dialog>
+  <dialog id="room-scan-dialog" aria-labelledby="scan-room-title" class="pairing-dialog">
+    <h2 id="scan-room-title">Scan a pairing code</h2>
+    <p>Point the camera at a Home Listen QR code. Only the camera is used; room audio stays connected.</p>
+    <video id="scan-video" autoplay muted playsinline aria-label="Pairing camera preview"></video>
+    <button id="close-room-scan" class="secondary" type="button">Stop camera</button>
+  </dialog>
   <audio id="audio" autoplay playsinline></audio>
   <script type="module" src="/src/main.js"></script>
 </body>
