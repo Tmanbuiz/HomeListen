@@ -468,12 +468,7 @@ class SavedRoomCoordinator {
     // /leave must succeed before dropping the saved authorization. Offline
     // failures keep the room visible and paused for an explicit retry.
     try {
-      await Future.wait([
-        finishing,
-        stopping,
-        _save(),
-        ?beforeLeave,
-      ]);
+      await Future.wait([finishing, stopping, _save(), ?beforeLeave]);
       await session.ensureReady();
       if (_closed || _sessions[id] != session) return;
       await session.forget();
