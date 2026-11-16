@@ -472,7 +472,7 @@ class SavedRoomCoordinator {
         finishing,
         stopping,
         _save(),
-        if (beforeLeave != null) beforeLeave,
+        ?beforeLeave,
       ]);
       await session.ensureReady();
       if (_closed || _sessions[id] != session) return;
