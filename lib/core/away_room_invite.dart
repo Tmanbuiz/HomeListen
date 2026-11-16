@@ -229,14 +229,11 @@ class AwayInviteBinding {
 class AwayRoomInviteController extends ChangeNotifier {
   AwayRoomInviteController({
     required this.room,
-    required Future<AwayRoomInvite> Function() generate,
-    required bool Function() isCurrent,
+    required this._generate,
+    required this._isCurrent,
     DateTime Function()? clock,
-    VoidCallback? onDispose,
-  }) : _generate = generate,
-       _isCurrent = isCurrent,
-       _clock = clock ?? DateTime.now,
-       _onDispose = onDispose;
+    this._onDispose,
+  }) : _clock = clock ?? DateTime.now;
 
   final AwayInviteRoom room;
   final Future<AwayRoomInvite> Function() _generate;
