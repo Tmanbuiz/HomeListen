@@ -26,6 +26,7 @@ import 'away_room_invite.dart';
 import 'pairing.dart';
 import 'sound_watch.dart';
 import 'saved_rooms.dart';
+import 'room_membership_queue.dart';
 
 enum MonitorRole { idle, talking, listening, watching, guardian }
 
@@ -432,6 +433,7 @@ class HomeMonitor extends ChangeNotifier {
   MicListener? _pendingListener;
   CloudConnection? _cloud;
   SavedRoomCoordinator? _roomCoordinator;
+  final RoomMembershipQueue _memberships = RoomMembershipQueue();
   AwayRoomInviteController? _awayRoomInvite;
   List<SavedCloudRoom> _savedRoomRecords = [];
   bool _switchingCloudRoom = false;
@@ -689,8 +691,13 @@ class HomeMonitor extends ChangeNotifier {
   Future<void> logoutCloudRoom(String roomId) async {
     if (!cloudMultiRoom) return;
     if (roomId == selectedCloudRoomId) _awayRoomInvite?.invalidate();
+    final pool = _cloudRooms(), origin = cloudServer;
     try {
-      await _cloudRooms().logout(roomId);
+      await _memberships.logout(
+        origin: origin,
+        roomId: roomId,
+        leave: (olderJoins) => pool.logout(roomId, beforeLeave: olderJoins),
+      );
       _error = null;
     } catch (error) {
       _error = 'This room was not logged out. ${_readableError(error)}';
@@ -698,22 +705,28 @@ class HomeMonitor extends ChangeNotifier {
     _cloudRoomsChanged();
   }
 
-  Future<void> _rememberCloudRoom(CloudConnection connection) async {
+  Future<bool> _rememberCloudRoom(
+    CloudConnection connection, {
+    required bool Function() isCurrent,
+  }) async {
     final id = connection.roomId;
     if (id == null) throw StateError('The home phone did not confirm pairing.');
     final name = connection.room?['roomName'];
     final pool = _cloudRooms();
-    await pool.add(
+    final added = await pool.add(
       SavedCloudRoom(
         roomId: id,
         origin: connection.origin,
         name: name is String && name.isNotEmpty ? name : 'Home phone',
       ),
       session: connection,
+      isCurrent: isCurrent,
     );
+    if (!added || !isCurrent()) return false;
     pool.setVolume(_volume);
     pool.requestRecording(_recordingOptIn || deviceRecording);
     _cloudRoomsChanged();
+    return true;
   }
 
   Future<void> _startCloudRooms({
@@ -1336,6 +1349,50 @@ class HomeMonitor extends ChangeNotifier {
 
   bool get authenticatorOn => _cloud?.authenticatorOn ?? false;
 
+  Future<bool> _pairCloudRoom({
+    required String origin,
+    String? roomId,
+    required Future<void> Function(CloudConnection) join,
+  }) async {
+    final epoch = _epoch;
+    final ticket = _memberships.beginJoin(origin: origin, roomId: roomId);
+    CloudConnection? connection;
+    var handedToPool = false;
+    try {
+      if (cloudServer.isEmpty) await prefs?.setString('cloud_server', origin);
+      _connectionMode = ConnectionMode.cloud;
+      await prefs?.setString('connection_mode', 'cloud');
+      if (!_pairingCurrent(epoch, origin)) return false;
+      final joining = _newRoomConnection(null);
+      connection = joining;
+      await ticket.request(() async {
+        if (!_pairingCurrent(epoch, origin)) throw const RoomJoinCancelled();
+        await join(joining);
+      });
+      bool current() =>
+          _pairingCurrent(epoch, origin) &&
+          joining.roomId != null &&
+          !ticket.cancelledFor(joining.roomId!);
+      if (!current()) return false;
+      handedToPool = true;
+      if (!await _rememberCloudRoom(joining, isCurrent: current) ||
+          !current()) {
+        return false;
+      }
+      _suppressAuto = false;
+      _error = null;
+      _notify();
+      return true;
+    } on RoomJoinCancelled {
+      return false;
+    } finally {
+      ticket.finish();
+      // Once add() runs the pool owns either adoption or closing this temporary
+      // transport. Before that, stale/cancelled joins still need local cleanup.
+      if (!handedToPool) await connection?.close();
+    }
+  }
+
   /// The other way in: the home's secret answer and a current authenticator
   /// code, with no pairing link.
   Future<bool> pairWithCode(String answer, String code) async {
@@ -1351,26 +1408,10 @@ class HomeMonitor extends ChangeNotifier {
         );
       }
       if (!cloudMultiRoom && (isActive || _busy)) await stop();
-      _connectionMode = ConnectionMode.cloud;
-      await prefs?.setString('connection_mode', 'cloud');
-      final connection = _newRoomConnection(null);
-      final epoch = _epoch, origin = cloudServer;
-      try {
-        await connection.joinWithCode(answer, code);
-        if (!_pairingCurrent(epoch, origin)) {
-          await connection.close();
-          return false;
-        }
-        await _rememberCloudRoom(connection);
-      } catch (_) {
-        await connection.close();
-        rethrow;
-      }
-      if (!_pairingCurrent(epoch, origin)) return false;
-      _suppressAuto = false;
-      _error = null;
-      _notify();
-      return true;
+      return await _pairCloudRoom(
+        origin: cloudServer,
+        join: (connection) => connection.joinWithCode(answer, code),
+      );
     } catch (e) {
       _error = _readableError(e);
       _notify();
@@ -1393,34 +1434,11 @@ class HomeMonitor extends ChangeNotifier {
           );
         }
         if (!cloudMultiRoom && (isActive || _busy)) await stop();
-        if (cloudServer.isEmpty) {
-          await prefs?.setString('cloud_server', invite.origin);
-        }
-        _connectionMode = ConnectionMode.cloud;
-        await prefs?.setString('connection_mode', 'cloud');
-        if (invite.origin != cloudServer) {
-          throw StateError(
-            'Use a pairing link from your configured cloud server.',
-          );
-        }
-        final connection = _newRoomConnection(null);
-        final epoch = _epoch, origin = cloudServer;
-        try {
-          await connection.join(invite);
-          if (!_pairingCurrent(epoch, origin)) {
-            await connection.close();
-            return false;
-          }
-          await _rememberCloudRoom(connection);
-        } catch (_) {
-          await connection.close();
-          rethrow;
-        }
-        if (!_pairingCurrent(epoch, origin)) return false;
-        _suppressAuto = false;
-        _error = null;
-        _notify();
-        return true;
+        return await _pairCloudRoom(
+          origin: invite.origin,
+          roomId: invite.roomId,
+          join: (connection) => connection.join(invite),
+        );
       } catch (e) {
         _error = _readableError(e);
         _notify();

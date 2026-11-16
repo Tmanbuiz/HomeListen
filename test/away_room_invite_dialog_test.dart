@@ -24,25 +24,56 @@ AwayRoomInvite inviteFor(AwayInviteRoom room, {Duration? lifetime}) =>
       issuerEpoch: 'membership-first',
     );
 
-Future<void> openDialog(
+class InviteDialogFixture {
+  const InviteDialogFixture(this.controller, this.closed);
+
+  final AwayRoomInviteController controller;
+  final Future<void> closed;
+
+  Future<void> close(WidgetTester tester) async {
+    if (find.byType(AwayRoomInviteDialog).evaluate().isNotEmpty) {
+      await tester.tap(find.text('Done'));
+      await tester.pumpAndSettle();
+    }
+    await closed;
+    expect(find.byType(AwayRoomInviteDialog), findsNothing);
+    expect(controller.invite, isNull);
+    expect(controller.validate(), isFalse);
+  }
+}
+
+Future<InviteDialogFixture> openDialog(
   WidgetTester tester,
   AwayRoomInviteController controller, {
   Future<void> Function(String)? copy,
   Future<bool> Function(String)? share,
 }) async {
+  if (copy != null) {
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') {
+        await copy((call.arguments as Map)['text'] as String);
+      }
+      return null;
+    });
+    addTearDown(
+      () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+    );
+  }
+  late Future<void> closed;
   await tester.pumpWidget(
     MaterialApp(
       home: Scaffold(
         body: Builder(
           builder: (context) => TextButton(
-            onPressed: () => showDialog<void>(
-              context: context,
-              builder: (_) => AwayRoomInviteDialog(
+            onPressed: () {
+              closed = showAwayRoomInviteDialog(
+                context,
                 controller: controller,
-                copyLink: copy,
                 shareLink: share ?? (_) async => true,
-              ),
-            ),
+              );
+            },
             child: const Text('Open invite'),
           ),
         ),
@@ -51,6 +82,7 @@ Future<void> openDialog(
   );
   await tester.tap(find.text('Open invite'));
   await tester.pumpAndSettle();
+  return InviteDialogFixture(controller, closed);
 }
 
 Future<void> generateCode(WidgetTester tester) async {
@@ -75,11 +107,12 @@ void main() {
       },
     )..invalidate();
     addTearDown(controller.dispose);
-    await openDialog(tester, controller);
+    final dialog = await openDialog(tester, controller);
     expect(find.byType(AwayRoomInviteDialog), findsNothing);
     expect(find.byType(QrImageView), findsNothing);
     expect(requests, 0);
     expect(tester.takeException(), isNull);
+    await dialog.close(tester);
   });
 
   testWidgets(
@@ -97,7 +130,7 @@ void main() {
         },
       );
       addTearDown(controller.dispose);
-      await openDialog(
+      final dialog = await openDialog(
         tester,
         controller,
         copy: (link) async => copies.add(link),
@@ -130,6 +163,7 @@ void main() {
       expect(shares, copies);
       expect(requests, 1);
       expect(find.byType(QrImageView), findsOneWidget);
+      await dialog.close(tester);
     },
   );
 
@@ -144,7 +178,7 @@ void main() {
       generate: () async => inviteFor(bedroom),
     );
     addTearDown(controller.dispose);
-    await openDialog(
+    final dialog = await openDialog(
       tester,
       controller,
       copy: (link) async => copies.add(link),
@@ -165,6 +199,7 @@ void main() {
     await tester.tap(copy);
     await tester.pumpAndSettle();
     expect(copies, [controller.invite!.code]);
+    await dialog.close(tester);
   });
 
   testWidgets(
@@ -181,7 +216,7 @@ void main() {
         },
       );
       addTearDown(controller.dispose);
-      await openDialog(tester, controller);
+      final dialog = await openDialog(tester, controller);
       await generateCode(tester);
       expect(find.byType(QrImageView), findsOneWidget);
       await tester.pump(const Duration(seconds: 2));
@@ -192,6 +227,7 @@ void main() {
       expect(find.byKey(const ValueKey('share-away-invite')), findsNothing);
       expect(find.textContaining('This code expired.'), findsOneWidget);
       expect(requests, 1);
+      await dialog.close(tester);
     },
   );
 
@@ -207,7 +243,7 @@ void main() {
         generate: () => pending.future,
       );
       addTearDown(controller.dispose);
-      await openDialog(tester, controller);
+      final dialog = await openDialog(tester, controller);
       final generate = find.byKey(const ValueKey('generate-away-invite'));
       await tester.ensureVisible(generate);
       await tester.tap(generate);
@@ -222,6 +258,7 @@ void main() {
       expect(controller.invite, isNull);
       expect(find.byType(QrImageView), findsNothing);
       expect(tester.takeException(), isNull);
+      await dialog.close(tester);
     },
   );
 
@@ -247,7 +284,7 @@ void main() {
       generate: () async => inviteFor(room),
     );
     addTearDown(controller.dispose);
-    await openDialog(tester, controller, copy: (_) async {});
+    final dialog = await openDialog(tester, controller, copy: (_) async {});
     await generateCode(tester);
     expect(tester.takeException(), isNull);
     for (final key in [
@@ -261,9 +298,7 @@ void main() {
       expect(button.hitTestable(), findsOneWidget);
       expect(tester.takeException(), isNull);
     }
-    await tester.tap(find.text('Done'));
-    await tester.pumpAndSettle();
-    expect(find.byType(AwayRoomInviteDialog), findsNothing);
+    await dialog.close(tester);
     expect(tester.takeException(), isNull);
   });
 }
