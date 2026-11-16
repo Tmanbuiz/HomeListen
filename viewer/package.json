@@ -1,6 +1,6 @@
 {
   "name": "homelisten-viewer",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,6 +11,8 @@
     "test:browser": "node test-browser/multi-room.cjs"
   },
   "dependencies": {
+    "@zxing/browser": "0.2.1",
+    "@zxing/library": "0.23.0",
     "firebase": "13.0.0"
   },
   "devDependencies": {

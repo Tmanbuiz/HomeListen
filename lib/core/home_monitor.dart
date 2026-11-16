@@ -22,6 +22,7 @@ import 'smart_home_settings.dart';
 import 'alerts.dart';
 import 'cloud_connection.dart';
 import 'cloud_pairing.dart';
+import 'away_room_invite.dart';
 import 'pairing.dart';
 import 'sound_watch.dart';
 import 'saved_rooms.dart';
@@ -431,6 +432,7 @@ class HomeMonitor extends ChangeNotifier {
   MicListener? _pendingListener;
   CloudConnection? _cloud;
   SavedRoomCoordinator? _roomCoordinator;
+  AwayRoomInviteController? _awayRoomInvite;
   List<SavedCloudRoom> _savedRoomRecords = [];
   bool _switchingCloudRoom = false;
   ConnectionMode _connectionMode = ConnectionMode.tailscale;
@@ -445,6 +447,82 @@ class HomeMonitor extends ChangeNotifier {
   int get connectedCloudRoomCount => _roomCoordinator?.connectedCount ?? 0;
   String cloudRoomStatus(String roomId) =>
       _roomCoordinator?.status(roomId) ?? 'Not connected';
+  AwayInvitePermission get selectedRoomInvitePermission {
+    final cloud = _cloud;
+    if (!cloudMultiRoom ||
+        cloud == null ||
+        cloud.roomId != selectedCloudRoomId) {
+      return AwayInvitePermission.unavailable;
+    }
+    return cloud.roomInvitePermission;
+  }
+
+  AwayRoomInviteController createAwayRoomInvite() {
+    final cloud = _cloud;
+    final target = cloud?.roomInviteTarget;
+    final uid = cloud?.memberUid;
+    if (cloud == null ||
+        target == null ||
+        uid == null ||
+        selectedRoomInvitePermission != AwayInvitePermission.allowed) {
+      throw AwayInviteException(selectedRoomInvitePermission.message);
+    }
+    _awayRoomInvite?.invalidate();
+    final binding = AwayInviteBinding(
+      room: target,
+      uid: uid,
+      issuerEpoch: cloud.shareInviteEpoch,
+    );
+    late AwayRoomInviteController controller;
+    controller = AwayRoomInviteController(
+      room: target,
+      isCurrent: () =>
+          !_disposed &&
+          cloudMultiRoom &&
+          cloudServer == target.origin &&
+          identical(_cloud, cloud) &&
+          selectedCloudRoomId == target.roomId &&
+          binding.matches(
+            current: cloud.roomInviteTarget,
+            currentUid: cloud.memberUid,
+            issuerEpoch: cloud.shareInviteEpoch,
+          ),
+      generate: () async {
+        binding.beginIssuing();
+        try {
+          final invite = await cloud.createSharedInvite(target);
+          if (!binding.accept(invite)) {
+            throw const AwayInviteException(
+              'Room access changed. Open the room again.',
+            );
+          }
+          return invite;
+        } finally {
+          binding.endIssuing();
+        }
+      },
+      onDispose: () {
+        if (identical(_awayRoomInvite, controller)) _awayRoomInvite = null;
+      },
+    );
+    _awayRoomInvite = controller;
+    return controller;
+  }
+
+  Future<bool> shareAwayRoomInvite(String link) async {
+    final controller = _awayRoomInvite;
+    if (controller == null ||
+        !controller.validate() ||
+        controller.invite?.code != link) {
+      throw const AwayInviteException('Create a current pairing code first.');
+    }
+    return await _channel.invokeMethod<bool>('sharePairingLink', {
+          'link': link,
+          'room': controller.room.name,
+        }) ??
+        false;
+  }
+
   String get cloudServer => prefs?.getString('cloud_server') ?? '';
   bool get hasPairing => cloudMode
       ? (cloudMultiRoom
@@ -543,6 +621,7 @@ class HomeMonitor extends ChangeNotifier {
   }
 
   Future<void> _finishSelectedRecording() async {
+    _awayRoomInvite?.invalidate();
     _switchingCloudRoom = true;
     _cloud?.requestRecordingAudio(false);
     _interruptRecording();
@@ -602,12 +681,14 @@ class HomeMonitor extends ChangeNotifier {
 
   Future<void> selectCloudRoom(String roomId) async {
     if (!cloudMultiRoom) return;
+    if (roomId != selectedCloudRoomId) _awayRoomInvite?.invalidate();
     await _cloudRooms().select(roomId);
     _cloudRoomsChanged();
   }
 
   Future<void> logoutCloudRoom(String roomId) async {
     if (!cloudMultiRoom) return;
+    if (roomId == selectedCloudRoomId) _awayRoomInvite?.invalidate();
     try {
       await _cloudRooms().logout(roomId);
       _error = null;
@@ -702,6 +783,7 @@ class HomeMonitor extends ChangeNotifier {
       _notify();
       return;
     }
+    _awayRoomInvite?.invalidate();
     await stop();
     if (mode != _connectionMode || (origin != null && origin != cloudServer)) {
       for (final alert in _outbox) {
@@ -1186,7 +1268,10 @@ class HomeMonitor extends ChangeNotifier {
   }
 
   void _notify() {
-    if (!_disposed) notifyListeners();
+    if (!_disposed) {
+      _awayRoomInvite?.validate();
+      notifyListeners();
+    }
   }
 
   void clearError() {
@@ -1195,6 +1280,7 @@ class HomeMonitor extends ChangeNotifier {
   }
 
   Future<void> selectDeviceRole(DeviceRole value) async {
+    if (_deviceRole != value) _awayRoomInvite?.invalidate();
     if (_deviceRole != value && (isActive || _busy)) await stop();
     if (_deviceRole != value) {
       _epoch++;
@@ -2776,6 +2862,8 @@ class HomeMonitor extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _awayRoomInvite?.invalidate();
+    _awayRoomInvite = null;
     _watch?.cancel();
     _healthTimer?.cancel();
     _outboxTimer?.cancel();

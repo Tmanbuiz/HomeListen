@@ -8,9 +8,11 @@ import '../core/activity_event.dart';
 import '../core/home_monitor.dart';
 import '../core/pairing.dart';
 import '../core/cloud_pairing.dart';
+import '../core/away_room_invite.dart';
 import '../core/saved_rooms.dart';
 import '../protocols/mic_monitor.dart';
 import 'access_dialogs.dart';
+import 'away_room_invite_dialog.dart';
 import 'design.dart';
 import 'guardian_panel.dart';
 import 'recordings_card.dart';
@@ -366,7 +368,7 @@ class _Dashboard extends StatelessWidget {
           FilledButton.icon(
             onPressed: monitor.busy ? null : () => _scan(context, monitor),
             icon: const Icon(Icons.qr_code_scanner),
-            label: const Text('Scan home phone’s code'),
+            label: const Text('Scan pairing code'),
           ),
           TextButton(
             onPressed: monitor.busy
@@ -626,6 +628,25 @@ class _SavedCloudRooms extends StatelessWidget {
     onSelected: monitor.selectCloudRoom,
     onLogout: monitor.logoutCloudRoom,
     onAdd: () => _scan(context, monitor),
+    onInvite: () async {
+      try {
+        final controller = monitor.createAwayRoomInvite();
+        await showAwayRoomInviteDialog(
+          context,
+          controller: controller,
+          shareLink: monitor.shareAwayRoomInvite,
+        );
+      } catch (_) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Room access changed. Open the room again.'),
+            ),
+          );
+        }
+      }
+    },
+    invitePermission: monitor.selectedRoomInvitePermission,
     busy: monitor.busy,
   );
 }
@@ -642,6 +663,8 @@ class CloudRoomsCard extends StatelessWidget {
     required this.onSelected,
     required this.onLogout,
     required this.onAdd,
+    this.onInvite,
+    this.invitePermission = AwayInvitePermission.unavailable,
     this.busy = false,
   });
 
@@ -651,6 +674,8 @@ class CloudRoomsCard extends StatelessWidget {
   final String Function(String roomId) statusForRoom;
   final Future<void> Function(String roomId) onSelected, onLogout;
   final VoidCallback onAdd;
+  final VoidCallback? onInvite;
+  final AwayInvitePermission invitePermission;
   final bool busy;
 
   Future<void> _run(
@@ -738,6 +763,19 @@ class CloudRoomsCard extends StatelessWidget {
               icon: const Icon(Icons.logout),
             ),
           ),
+        if (onInvite != null && rooms.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            key: const ValueKey('share-selected-cloud-room'),
+            onPressed: busy || invitePermission != AwayInvitePermission.allowed
+                ? null
+                : onInvite,
+            icon: const Icon(Icons.qr_code_2),
+            label: const Text('Share this room'),
+          ),
+          Text(invitePermission.message, style: const TextStyle(fontSize: 12)),
+          const SizedBox(height: 8),
+        ],
         OutlinedButton.icon(
           key: const ValueKey('add-cloud-room'),
           onPressed: busy ? null : onAdd,
@@ -1252,8 +1290,10 @@ class _Devices extends StatelessWidget {
           ),
         ],
         const SizedBox(height: 24),
-        const Text(
-          'Pairing codes contain a secret. Share the code only with the person who should listen. Up to ${MicTalker.maxListeners} phones can listen at the same time; resetting the code disconnects them all.',
+        Text(
+          home
+              ? 'Pairing codes contain a secret. Share the code only with the person who should listen. Up to ${MicTalker.maxListeners} phones can listen at the same time; resetting the code disconnects them all.'
+              : 'Get a pairing code from the home phone or from Share this room on a paired caregiver’s phone. Keep codes private. A code from Share this room expires after 10 minutes and can pair one new phone. Up to ${MicTalker.maxListeners} phones can listen at the same time.',
         ),
       ],
     );
@@ -1649,7 +1689,7 @@ Future<void> _accept(
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          monitor.error ?? 'That code could not be paired. Use the code shown on your home phone.',
+          monitor.error ?? 'That code could not be paired. Use a fresh code from the home phone or Share this room on a paired phone.',
         ),
       ),
     );
@@ -1799,7 +1839,7 @@ Future<void> _showPairingCode(BuildContext context, HomeMonitor monitor) async {
                       ),
                       const SizedBox(height: 16),
                       const Text(
-                        'On Android, scan in Devices. On iPhone, open this link in Safari. Cloud invitations expire in 10 minutes; pairing is saved after joining.',
+                        'On Android or iPhone, scan in Home Listen → Devices, or open this link in a browser. Cloud invitations expire in 10 minutes; pairing is saved after joining.',
                       ),
                       TextButton.icon(
                         onPressed: () async {
@@ -1940,8 +1980,8 @@ class _ScanPageState extends State<_ScanPage> {
           const Padding(
             padding: EdgeInsets.all(16),
             child: Text(
-              'Point the camera at the code on your home phone '
-              '(Home Listen → Show pairing code). The camera is only on while '
+              'Scan a code from the home phone (Devices → Show pairing code) '
+              'or a paired phone (Devices → Share this room). The camera is only on while '
               'this screen is open.',
               style: TextStyle(color: _muted, fontSize: 12),
             ),

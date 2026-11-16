@@ -203,6 +203,85 @@ async function rememberMember(store, id, uid, label, nowMs) {
   }
 }
 
+function canShareInvite(room, uid) {
+  const access = room.memberAccess?.[uid];
+  return room.ownerUid !== uid && room.members?.[uid] === true &&
+    (access == null || (typeof access === "object" && !Array.isArray(access) &&
+      (access.role ?? "caregiver") === "caregiver" && access.expiresAtMs == null));
+}
+
+function grantMember(room, uid) {
+  return { ...room, members: { ...room.members, [uid]: true },
+    // Keep a nonce only for current members. A fresh membership cannot revive
+    // an old shared link, even if the same anonymous identity joins again.
+    shareInviteEpochs: room.members?.[uid] === true ? { ...room.shareInviteEpochs } :
+      { ...room.shareInviteEpochs, [uid]: randomId() } };
+}
+
+const shareInvitePath = (secretHash) => "roomInvites/away-" + secretHash;
+const shareIndexPath = async (id, uid) => "roomInvites/issuer-" + await digest(id + ":" + uid);
+const expiredInvite = (invite, nowMs) => !(invite?.expiresAt instanceof Date) ||
+  !Number.isFinite(invite.expiresAt.getTime()) || invite.expiresAt.getTime() <= nowMs;
+
+async function redeemShareInvite(store, id, uid, secretHash, now) {
+  const path = shareInvitePath(secretHash);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const invite = await store.get(path);
+    if (!invite || invite.data.kind !== "away" || invite.data.roomId !== id ||
+        !constantTimeEqual(invite.data.secretHash, secretHash) || expiredInvite(invite.data, now())) {
+      throw new HttpError(403, "This pairing code has expired. Ask for a new shared link.", "invite_expired");
+    }
+    const room = await store.get("rooms/" + id);
+    if (invite.data.receiverUid) {
+      // A successful request may lose its response. Retry only that exact
+      // membership; never add it again or restore a role changed by the owner.
+      if (!room || invite.data.receiverUid !== uid || room.data.members?.[uid] !== true ||
+          room.data.shareInviteEpochs?.[uid] !== invite.data.receiverEpoch) {
+        throw new HttpError(403, "This shared pairing code has already been used.", "invite_used");
+      }
+      if (expiredInvite(invite.data, now())) {
+        throw new HttpError(403, "This pairing code has expired. Ask for a new shared link.", "invite_expired");
+      }
+      return room.data;
+    }
+    if (!room || room.data.generation !== invite.data.generation ||
+        (room.data.invitationEpoch ?? 0) !== invite.data.invitationEpoch ||
+        !canShareInvite(room.data, invite.data.issuerUid) ||
+        room.data.shareInviteEpochs?.[invite.data.issuerUid] !== invite.data.issuerEpoch) {
+      throw new HttpError(403, "This shared pairing code was revoked. Ask for a new link.", "invite_revoked");
+    }
+    if (room.data.ownerUid === uid) throw new HttpError(400, "Use a different phone to listen.");
+    if (room.data.members?.[uid] === true) {
+      // A competing request may have consumed the invitation between these
+      // reads. Let its receipt decide whether this is the same-phone retry.
+      if ((await store.get(path))?.version !== invite.version) continue;
+      throw new HttpError(409, "This phone is already paired with this home.", "already_paired");
+    }
+    if (Object.values(room.data.members ?? {}).filter((member) => member === true).length >= 5) {
+      if ((await store.get(path))?.version !== invite.version) continue;
+      throw new HttpError(409, "Five listening phones are already paired. Revoke a phone at home first.", "room_full");
+    }
+    const indexPath = await shareIndexPath(id, invite.data.issuerUid);
+    const index = await store.get(indexPath);
+    if (!index || index.data.kind !== "away-index" || index.data.roomId !== id ||
+        index.data.issuerUid !== invite.data.issuerUid || index.data.pendingHash !== secretHash) {
+      if ((await store.get(path))?.version !== invite.version) continue;
+      throw new HttpError(403, "This shared pairing code was replaced. Ask for the latest link.", "invite_revoked");
+    }
+    const data = grantMember(room.data, uid);
+    if (expiredInvite(invite.data, now())) {
+      throw new HttpError(403, "This pairing code has expired. Ask for a new shared link.", "invite_expired");
+    }
+    try {
+      // One atomic compare-and-swap checks all the authorization reads while
+      // granting membership, consuming the code and clearing the issuer slot.
+      await store.consumeShareInvitation(id, room, data, path, invite, indexPath, index, uid, now);
+      return data;
+    } catch (error) { if (error.status !== 409 || attempt === 4) throw error; }
+  }
+  throw new HttpError(409, "The pairing invitation changed. Try again.");
+}
+
 async function addMember(store, id, uid, generation = null, invitationEpoch = null) {
   for (let attempt = 0; attempt < 5; attempt++) {
     const room = await store.get("rooms/" + id);
@@ -214,7 +293,7 @@ async function addMember(store, id, uid, generation = null, invitationEpoch = nu
     if (!room.data.members[uid] && Object.keys(room.data.members).length >= 5) {
       throw new HttpError(409, "Five listening phones are already paired. Revoke a phone at home first.");
     }
-    const data = { ...room.data, members: { ...room.data.members, [uid]: true } };
+    const data = grantMember(room.data, uid);
     try {
       await store.put("rooms/" + id, data, room.version);
       return data;
@@ -383,11 +462,11 @@ export function createWorker(overrides = {}) {
         ok: true,
         configured: Boolean(env.FIREBASE_PROJECT_ID && env.FIREBASE_API_KEY &&
           env.FIREBASE_WEB_APP_ID && env.FIREBASE_ANDROID_APP_ID && env.FIREBASE_SERVICE_ACCOUNT),
-        version: "2.2.5"
+        version: "2.3.1"
       });
     }
     if (request.method === "GET" && path === "/api/config") return json({
-      ...publicConfig(env), features: { guardian: true, retryAlerts: true, memberAccess: true }
+      ...publicConfig(env), features: { guardian: true, retryAlerts: true, memberAccess: true, awayInvites: true }
     });
     const { uid } = await auth(request, env);
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(uid)) throw new HttpError(401, "Invalid phone identity.");
@@ -462,13 +541,12 @@ export function createWorker(overrides = {}) {
       }
       const invite = await store.get("roomInvites/" + id);
       const hashed = await digest(input.secret);
-      if (!invite || invite.data.expiresAt.getTime() <= now() ||
-          !constantTimeEqual(invite.data.secretHash, hashed)) {
-        throw new HttpError(403, "This pairing code has expired. Show a new code on the home phone.");
-      }
-      // A valid invitation authorizes this first membership; an authenticated
-      // token alone does not.
-      const data = await addMember(store, id, uid, invite.data.generation, invite.data.invitationEpoch ?? 0);
+      const homeInvite = invite && !expiredInvite(invite.data, now()) && constantTimeEqual(invite.data.secretHash, hashed);
+      // Existing home links keep their behavior. Away links have their own
+      // one-use authorization and never replace the home phone's invitation.
+      const data = homeInvite
+        ? await addMember(store, id, uid, invite.data.generation, invite.data.invitationEpoch ?? 0)
+        : await redeemShareInvite(store, id, uid, hashed, now);
       await rememberMember(store, id, uid, deviceLabel(input.label), now());
       return json({ roomId: id, room: data });
     }
@@ -477,6 +555,29 @@ export function createWorker(overrides = {}) {
       .includes(action);
     const room = await readRoom(store, id, uid, ownerOnly);
     const access = room.data.memberAccess?.[uid];
+    if (action === "share-invite" && request.method === "POST") {
+      const indexPath = await shareIndexPath(id, uid);
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const current = attempt === 0 ? room : await readRoom(store, id, uid);
+        if (!canShareInvite(current.data, uid)) {
+          throw new HttpError(403, "Only a permanent caregiver phone can share a pairing link.", "share_not_allowed");
+        }
+        const index = await store.get(indexPath);
+        const previousPath = index?.data.pendingHash ? shareInvitePath(index.data.pendingHash) : null;
+        const previous = previousPath ? await store.get(previousPath) : null;
+        const secret = randomId(32);
+        const secretHash = await digest(secret);
+        const expiresAt = new Date(now() + INVITE_MS);
+        const issuerEpoch = current.data.shareInviteEpochs?.[uid] ?? randomId();
+        try {
+          await store.putShareInvitation(id, current, indexPath, index, shareInvitePath(secretHash), {
+            kind: "away", roomId: id, issuerUid: uid, issuerEpoch, secretHash,
+            generation: current.data.generation, invitationEpoch: current.data.invitationEpoch ?? 0, expiresAt
+          }, previous ? { ...previous, path: previousPath } : null);
+          return json({ roomId: id, secret, expiresAt, generation: current.data.generation, issuerEpoch });
+        } catch (error) { if (error.status !== 409 || attempt === 4) throw error; }
+      }
+    }
     if (room.data.ownerUid !== uid && access?.expiresAtMs != null && access.expiresAtMs <= now()) {
       throw new HttpError(404, 'Your temporary access has expired. Ask the home phone owner to renew it.', 'access_expired');
     }
@@ -546,7 +647,9 @@ export function createWorker(overrides = {}) {
         throw new HttpError(400, 'Temporary access must end within seven days.');
       }
       await mutateRoom(store, id, uid, true, (data) => {
+        if (data.members?.[input.uid] !== true) throw new HttpError(404, 'That phone is not paired.');
         data.memberAccess = { ...data.memberAccess, [input.uid]: { role: input.role, expiresAtMs: expiry } };
+        data.shareInviteEpochs = { ...data.shareInviteEpochs, [input.uid]: randomId() };
         if (input.role === 'alerts') delete data.activeSessions[input.uid];
         return data;
       });
@@ -562,6 +665,7 @@ export function createWorker(overrides = {}) {
       await mutateRoom(store, id, uid, true, (data) => {
         delete data.members[input.uid]; delete data.watchers[input.uid]; delete data.activeSessions[input.uid];
         if (data.memberAccess) delete data.memberAccess[input.uid];
+        if (data.shareInviteEpochs) delete data.shareInviteEpochs[input.uid];
         data.invitationEpoch = (data.invitationEpoch ?? 0) + 1;
         return data;
       });
@@ -627,7 +731,7 @@ export function createWorker(overrides = {}) {
     }
     if (action === "revoke" && request.method === "POST") {
       await mutateRoom(store, id, uid, true, (data) => ({
-        ...data, members: {}, memberAccess: {}, watchers: {}, activeSessions: {}, generation: data.generation + 1
+        ...data, members: {}, memberAccess: {}, shareInviteEpochs: {}, watchers: {}, activeSessions: {}, generation: data.generation + 1
       }));
       await store.delete("roomInvites/" + id);
       await store.delete("roomMembers/" + id);
@@ -638,6 +742,7 @@ export function createWorker(overrides = {}) {
       await mutateRoom(store, id, uid, false, (data) => {
         delete data.members[uid]; delete data.watchers[uid]; delete data.activeSessions[uid];
         if (data.memberAccess) delete data.memberAccess[uid];
+        if (data.shareInviteEpochs) delete data.shareInviteEpochs[uid];
         return data;
       });
       await store.delete("rooms/" + id + "/devices/" + uid);

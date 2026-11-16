@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:home_listen/core/saved_rooms.dart';
+import 'package:home_listen/core/away_room_invite.dart';
 import 'package:home_listen/ui/home_monitor_page.dart';
 
 void main() {
@@ -217,5 +218,73 @@ void main() {
     await tester.ensureVisible(add);
     await tester.tap(add);
     expect(additions, 1);
+  });
+
+  testWidgets('Share this room invokes only the selected-room invite action', (
+    tester,
+  ) async {
+    var invites = 0;
+    final selections = <String>[], logouts = <String>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: CloudRoomsCard(
+              rooms: rooms(),
+              selectedRoomId: 'kitchen',
+              connectedCount: 2,
+              statusForRoom: (_) => 'Live connected',
+              onSelected: (id) async => selections.add(id),
+              onLogout: (id) async => logouts.add(id),
+              onAdd: () {},
+              onInvite: () => invites++,
+              invitePermission: AwayInvitePermission.allowed,
+            ),
+          ),
+        ),
+      ),
+    );
+    final invite = find.byKey(const ValueKey('share-selected-cloud-room'));
+    await tester.ensureVisible(invite);
+    await tester.tap(invite);
+    expect(invites, 1);
+    expect(selections, isEmpty);
+    expect(logouts, isEmpty);
+    expect(find.text('2 saved rooms · 2 live connections'), findsOneWidget);
+  });
+
+  testWidgets('restricted, unverified and old-server rooms cannot share', (
+    tester,
+  ) async {
+    var invites = 0;
+    for (final permission in [
+      AwayInvitePermission.restricted,
+      AwayInvitePermission.unavailable,
+      AwayInvitePermission.unsupported,
+    ]) {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: CloudRoomsCard(
+                rooms: rooms(),
+                selectedRoomId: 'bedroom',
+                connectedCount: 2,
+                statusForRoom: (_) => 'Live connected',
+                onSelected: (_) async {},
+                onLogout: (_) async {},
+                onAdd: () {},
+                onInvite: () => invites++,
+                invitePermission: permission,
+              ),
+            ),
+          ),
+        ),
+      );
+      final invite = find.byKey(const ValueKey('share-selected-cloud-room'));
+      expect(tester.widget<OutlinedButton>(invite).onPressed, isNull);
+      expect(find.text(permission.message), findsOneWidget);
+    }
+    expect(invites, 0);
   });
 }

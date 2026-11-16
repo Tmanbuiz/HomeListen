@@ -37,6 +37,30 @@ class MemoryStore {
     });
     this.docs.set("roomInvites/" + id, { data: structuredClone(invitation), version: String(++this.counter) });
   }
+  async putShareInvitation(id, room, indexPath, index, invitePath, invitation, previous) {
+    if (this.docs.get(`rooms/${id}`)?.version !== room.version ||
+        (this.docs.get(indexPath)?.version ?? null) !== (index?.version ?? null) || this.docs.has(invitePath) ||
+        (previous && !previous.data.receiverUid && this.docs.get(previous.path)?.version !== previous.version)) {
+      throw new HttpError(409, "conflict");
+    }
+    this.docs.set(`rooms/${id}`, { data: { ...structuredClone(room.data), invitationEpoch: room.data.invitationEpoch ?? 0,
+      shareInviteEpochs: { ...room.data.shareInviteEpochs, [invitation.issuerUid]: invitation.issuerEpoch } }, version: String(++this.counter) });
+    this.docs.set(indexPath, { data: { kind: "away-index", roomId: id, issuerUid: invitation.issuerUid,
+      pendingHash: invitation.secretHash, expiresAt: invitation.expiresAt }, version: String(++this.counter) });
+    this.docs.set(invitePath, { data: structuredClone(invitation), version: String(++this.counter) });
+    if (previous && !previous.data.receiverUid) this.docs.delete(previous.path);
+  }
+  async consumeShareInvitation(id, room, data, invitePath, invite, indexPath, index, uid, now) {
+    if (invite.data.expiresAt.getTime() <= now()) throw new HttpError(403, "expired", "invite_expired");
+    if (this.docs.get(`rooms/${id}`)?.version !== room.version ||
+        this.docs.get(invitePath)?.version !== invite.version || this.docs.get(indexPath)?.version !== index.version) {
+      throw new HttpError(409, "conflict");
+    }
+    this.docs.set(`rooms/${id}`, { data: structuredClone(data), version: String(++this.counter) });
+    this.docs.set(invitePath, { data: { ...structuredClone(invite.data), receiverUid: uid,
+      receiverEpoch: data.shareInviteEpochs[uid] }, version: String(++this.counter) });
+    this.docs.set(indexPath, { data: { ...structuredClone(index.data), pendingHash: null }, version: String(++this.counter) });
+  }
   async openSession(id, room, sid, session) {
     if (this.docs.get("rooms/" + id)?.version !== room.version) throw new HttpError(409, "conflict");
     const old = room.data.activeSessions?.[session.viewerUid];
@@ -693,6 +717,319 @@ test("with TOTP_KEY the authenticator secret is stored encrypted and still works
   assert.ok(typeof stored.secretEnc === "string" && !stored.secretEnc.includes(secret));
   s.advance(31000);
   assert.equal((await byCode(s, QA.answer, await codeNow(s, secret))).status, 200);
+});
+
+// --- Away-phone delegation ----------------------------------------------
+const share = (s, id, uid = "away") => s.api(`/rooms/${id}/share-invite`, uid);
+async function sharedHome() {
+  const s = setup(); const { id, secret } = await s.home();
+  assert.equal((await s.join(id, secret)).status, 200);
+  return { ...s, id, homeSecret: secret };
+}
+async function accessFor(s, uid, role, expiresAtMs) {
+  return s.api(`/rooms/${s.id}/member-access`, "home", { uid, role, ...(expiresAtMs === undefined ? {} : { expiresAtMs }) });
+}
+
+test("away invitation capability and API version are discoverable", async () => {
+  const s = setup();
+  assert.equal((await s.api('/config', null, {}, 'GET')).body.features.awayInvites, true);
+  assert.equal((await s.api('/health', null, {}, 'GET')).body.version, '2.3.1');
+});
+
+test("a permanent caregiver shares the selected offline or Guardian room without starting capture", async () => {
+  for (const guardian of [false, true]) {
+    const s = await sharedHome();
+    if (guardian) await s.api(`/rooms/${s.id}/state`, "home", { sharing: true, audioAvailable: false });
+    const before = (await s.store.get(`rooms/${s.id}`)).data;
+    const result = await share(s, s.id);
+    assert.equal(result.status, 200);
+    assert.equal(result.body.roomId, s.id);
+    assert.equal(result.body.generation, before.generation);
+    assert.match(result.body.secret, /^[A-Za-z0-9_-]{43}$/);
+    assert.equal(new Date(result.body.expiresAt).getTime(), s.now() + 600000);
+    assert.equal((await s.join(s.id, result.body.secret, 'new_away')).status, 200);
+    const after = (await s.store.get(`rooms/${s.id}`)).data;
+    assert.equal(after.sharing, before.sharing);
+    assert.equal(after.audioAvailable, before.audioAvailable);
+    assert.equal(after.lastSeenMs, before.lastSeenMs);
+    assert.deepEqual(after.activeSessions, before.activeSessions);
+    assert.equal(after.members.new_away, true);
+    assert.equal(after.shareInviteEpochs.away, result.body.issuerEpoch);
+    for (const action of ['invite', 'state', 'revoke', 'member-access', 'totp-start', 'members']) {
+      assert.equal((await s.api(`/rooms/${s.id}/${action}`, 'new_away', { sharing: true })).status, 403);
+    }
+  }
+});
+
+test("only a current permanent caregiver can issue away links, including legacy memberships", async () => {
+  const s = await sharedHome();
+  assert.equal((await share(s, s.id, null)).status, 401);
+  assert.equal((await share(s, s.id, 'stranger')).status, 404);
+  assert.equal((await share(s, s.id, 'home')).body.code, 'share_not_allowed');
+  const path = `rooms/${s.id}`;
+  let room = await s.store.get(path);
+  delete room.data.shareInviteEpochs;
+  await s.store.put(path, room.data, room.version);
+  const legacy = await share(s, s.id);
+  assert.equal(legacy.status, 200);
+  assert.equal((await s.store.get(path)).data.shareInviteEpochs.away, legacy.body.issuerEpoch);
+  room = await s.store.get(path); room.data.memberAccess = { away: { expiresAtMs: null } };
+  await s.store.put(path, room.data, room.version);
+  assert.equal((await share(s, s.id)).status, 200);
+  for (const access of [
+    { role: 'alerts', expiresAtMs: null }, { role: 'guest', expiresAtMs: s.now() + 10000 },
+    { role: 'caregiver', expiresAtMs: s.now() + 10000 }, { role: 'caregiver', expiresAtMs: s.now() - 1 },
+    { role: 'unknown', expiresAtMs: null }, 'unknown'
+  ]) {
+    room = await s.store.get(path); room.data.memberAccess = { away: access };
+    await s.store.put(path, room.data, room.version);
+    const denied = await share(s, s.id);
+    assert.equal(denied.status, 403); assert.equal(denied.body.code, 'share_not_allowed');
+  }
+  await s.api(`/rooms/${s.id}/revoke-member`, 'home', { uid: 'away' });
+  assert.equal((await share(s, s.id)).status, 404);
+});
+
+test("away links are hash-only, issuer-specific and leave the multi-use home invitation intact", async () => {
+  const s = await sharedHome();
+  await s.join(s.id, s.homeSecret, 'second');
+  const homeInvite = await s.store.get(`roomInvites/${s.id}`);
+  const first = await share(s, s.id);
+  const second = await share(s, s.id, 'second');
+  const renewed = await share(s, s.id);
+  assert.equal(renewed.body.issuerEpoch, first.body.issuerEpoch);
+  const privateDocs = [...s.store.docs.entries()].filter(([path]) => path.startsWith('roomInvites/'));
+  for (const secret of [first.body.secret, second.body.secret, renewed.body.secret]) {
+    assert.equal(JSON.stringify(privateDocs).includes(secret), false);
+  }
+  assert.deepEqual(await s.store.get(`roomInvites/${s.id}`), homeInvite);
+  assert.equal(privateDocs.filter(([, doc]) => doc.data.kind === 'away').length, 2);
+  assert.equal(privateDocs.filter(([, doc]) => doc.data.kind === 'away-index').length, 2);
+  assert.equal((await s.join(s.id, first.body.secret, 'old_link')).status, 403);
+  assert.equal((await s.join(s.id, renewed.body.secret, 'receiver_a')).status, 200);
+  assert.equal((await s.join(s.id, second.body.secret, 'receiver_b')).status, 200);
+  assert.equal((await s.join(s.id, s.homeSecret, 'from_home')).status, 200);
+});
+
+test("one shared link admits only one competing receiver and identical retries are idempotent", async () => {
+  const s = await sharedHome(); const invitation = await share(s, s.id);
+  const results = await Promise.all(['receiver_a', 'receiver_b'].map((uid) => s.join(s.id, invitation.body.secret, uid)));
+  assert.deepEqual(results.map((result) => result.status).sort(), [200, 403]);
+  const winner = results[0].status === 200 ? 'receiver_a' : 'receiver_b';
+  assert.equal(results.find((result) => result.status === 403).body.code, 'invite_used');
+  assert.equal((await s.join(s.id, invitation.body.secret, winner)).status, 200);
+  const next = await share(s, s.id);
+  const retries = await Promise.all([0, 1].map(() => s.join(s.id, next.body.secret, 'same_receiver')));
+  assert.deepEqual(retries.map((result) => result.status), [200, 200]);
+  assert.equal(Object.keys((await s.store.get(`rooms/${s.id}`)).data.members).length, 3);
+  // Renewal after consumption retains the receipt for a lost-response retry.
+  await share(s, s.id);
+  assert.equal((await s.join(s.id, next.body.secret, 'same_receiver')).status, 200);
+});
+
+test("shared pairing never elevates an existing caregiver, alerts-only phone or guest", async () => {
+  const s = await sharedHome(); await s.join(s.id, s.homeSecret, 'existing');
+  const invitation = await share(s, s.id);
+  for (const [role, expiry] of [['caregiver', undefined], ['alerts', undefined], ['guest', s.now() + 10000]]) {
+    assert.equal((await accessFor(s, 'existing', role, expiry)).status, 200);
+    const before = (await s.store.get(`rooms/${s.id}`)).data;
+    const result = await s.join(s.id, invitation.body.secret, 'existing');
+    assert.equal(result.status, 409); assert.equal(result.body.code, 'already_paired');
+    assert.deepEqual((await s.store.get(`rooms/${s.id}`)).data, before);
+  }
+  assert.equal((await s.join(s.id, invitation.body.secret, 'new_receiver')).status, 200);
+  assert.equal((await s.store.get(`rooms/${s.id}`)).data.memberAccess.existing.role, 'guest');
+});
+
+test("expiry is enforced at ten minutes, after delayed reads and at the commit boundary", async () => {
+  for (const boundary of ['before_read', 'after_read', 'at_commit']) {
+    const s = await sharedHome(); const invitation = await share(s, s.id);
+    if (boundary === 'before_read') s.advance(600000);
+    if (boundary === 'after_read') {
+      const get = s.store.get.bind(s.store);
+      s.store.get = async (path) => { const doc = await get(path); if (path.startsWith('roomInvites/issuer-')) s.advance(600000); return doc; };
+    }
+    if (boundary === 'at_commit') {
+      const consume = s.store.consumeShareInvitation.bind(s.store);
+      s.store.consumeShareInvitation = async (...args) => { s.advance(600000); return consume(...args); };
+    }
+    const result = await s.join(s.id, invitation.body.secret, 'receiver');
+    assert.equal(result.status, 403); assert.equal(result.body.code, 'invite_expired');
+    assert.equal((await s.store.get(`rooms/${s.id}`)).data.members.receiver, undefined);
+  }
+  const s = await sharedHome(); const invitation = await share(s, s.id);
+  await s.join(s.id, invitation.body.secret, 'receiver'); s.advance(600000);
+  assert.equal((await s.join(s.id, invitation.body.secret, 'receiver')).body.code, 'invite_expired');
+});
+
+test("issuer leave, demotion then promotion, and revocation permanently invalidate unused links", async () => {
+  for (const change of ['leave', 'alerts', 'guest', 'temporary', 'revoke-member', 'revoke']) {
+    const s = await sharedHome(); const invitation = await share(s, s.id);
+    if (change === 'leave') {
+      await s.api(`/rooms/${s.id}/leave`, 'away');
+      assert.equal((await s.join(s.id, s.homeSecret)).status, 200);
+    } else if (change === 'revoke-member') {
+      await s.api(`/rooms/${s.id}/revoke-member`, 'home', { uid: 'away' });
+      assert.equal((await s.join(s.id, await freshInvite(s, s.id))).status, 200);
+    } else if (change === 'revoke') {
+      await s.api(`/rooms/${s.id}/revoke`, 'home');
+      assert.equal((await s.join(s.id, await freshInvite(s, s.id))).status, 200);
+    } else {
+      await accessFor(s, 'away', change === 'temporary' ? 'caregiver' : change,
+        change === 'alerts' ? undefined : s.now() + 10000);
+      await accessFor(s, 'away', 'caregiver');
+    }
+    const result = await s.join(s.id, invitation.body.secret, 'receiver');
+    assert.equal(result.status, 403, change); assert.equal(result.body.code, 'invite_revoked', change);
+    assert.equal((await s.store.get(`rooms/${s.id}`)).data.members.receiver, undefined);
+  }
+});
+
+test("leaving affects only the sender after a receiver has joined", async () => {
+  const s = await sharedHome(); const invitation = await share(s, s.id);
+  await s.join(s.id, invitation.body.secret, 'receiver');
+  await s.api(`/rooms/${s.id}/state`, 'home', { sharing: true });
+  const session = await s.api(`/rooms/${s.id}/sessions`, 'receiver');
+  await s.api(`/rooms/${s.id}/device`, 'receiver', { kind: 'fcm', token: 'r'.repeat(80) });
+  assert.equal((await s.api(`/rooms/${s.id}/leave`, 'away')).status, 200);
+  const room = (await s.store.get(`rooms/${s.id}`)).data;
+  assert.equal(room.members.receiver, true);
+  assert.equal(room.activeSessions.receiver, session.body.sessionId);
+  assert.equal(room.watchers.receiver, true);
+  assert.equal(room.shareInviteEpochs.away, undefined);
+  assert.equal((await s.join(s.id, invitation.body.secret, 'receiver')).status, 200);
+  assert.equal((await s.api(`/rooms/${s.id}`, 'receiver', {}, 'GET')).status, 200);
+});
+
+test("a consumed code cannot re-add a departed or revoked receiver, or restore a restricted role", async () => {
+  for (const change of ['leave', 'revoke-member', 'alerts', 'guest', 'leave_then_rejoin']) {
+    const s = await sharedHome(); const invitation = await share(s, s.id);
+    await s.join(s.id, invitation.body.secret, 'receiver');
+    if (change.startsWith('leave')) await s.api(`/rooms/${s.id}/leave`, 'receiver');
+    else if (change === 'revoke-member') await s.api(`/rooms/${s.id}/revoke-member`, 'home', { uid: 'receiver' });
+    else await accessFor(s, 'receiver', change, change === 'guest' ? s.now() + 10000 : undefined);
+    if (change === 'leave_then_rejoin') await s.join(s.id, s.homeSecret, 'receiver');
+    const before = (await s.store.get(`rooms/${s.id}`)).data;
+    const result = await s.join(s.id, invitation.body.secret, 'receiver');
+    assert.equal(result.status, 403, change); assert.equal(result.body.code, 'invite_used', change);
+    assert.deepEqual((await s.store.get(`rooms/${s.id}`)).data, before);
+  }
+});
+
+test("the five-phone limit holds across concurrent away invitation redemptions", async () => {
+  const s = await sharedHome();
+  for (const uid of ['second', 'third', 'fourth']) await s.join(s.id, s.homeSecret, uid);
+  const first = await share(s, s.id), second = await share(s, s.id, 'second');
+  const results = await Promise.all([s.join(s.id, first.body.secret, 'receiver_a'), s.join(s.id, second.body.secret, 'receiver_b')]);
+  assert.deepEqual(results.map((result) => result.status).sort(), [200, 409]);
+  assert.equal(results.find((result) => result.status === 409).body.code, 'room_full');
+  assert.equal(Object.keys((await s.store.get(`rooms/${s.id}`)).data.members).length, 5);
+  await s.api(`/rooms/${s.id}/leave`, 'fourth');
+  const loserIndex = results[0].status === 409 ? 0 : 1;
+  assert.equal((await s.join(s.id, [first, second][loserIndex].body.secret, ['receiver_a', 'receiver_b'][loserIndex])).status, 200);
+});
+
+test("room and invitation CAS reject redemption racing issuer leave, demotion or revocation", { timeout: 5000 }, async (t) => {
+  for (const change of ['leave', 'demote', 'revoke-member', 'revoke']) {
+    const s = await sharedHome(); const invitation = await share(s, s.id);
+    const entered = Promise.withResolvers(), release = Promise.withResolvers(); t.after(() => release.resolve());
+    const consume = s.store.consumeShareInvitation.bind(s.store); let once = true;
+    s.store.consumeShareInvitation = async (...args) => {
+      if (once) { once = false; entered.resolve(); await release.promise; }
+      return consume(...args);
+    };
+    const pending = s.join(s.id, invitation.body.secret, 'receiver'); await entered.promise;
+    if (change === 'leave') await s.api(`/rooms/${s.id}/leave`, 'away');
+    else if (change === 'demote') await accessFor(s, 'away', 'alerts');
+    else await s.api(`/rooms/${s.id}/${change}`, 'home', { uid: 'away' });
+    release.resolve();
+    const result = await pending;
+    assert.equal(result.status, 403, change); assert.equal(result.body.code, 'invite_revoked', change);
+    assert.equal((await s.store.get(`rooms/${s.id}`)).data.members.receiver, undefined);
+  }
+});
+
+test("invitation issuance cannot authorize against a stale issuer membership", async () => {
+  for (const change of ['leave', 'demote', 'revoke-member']) {
+    const s = await sharedHome(); const issue = s.store.putShareInvitation.bind(s.store); let once = true;
+    s.store.putShareInvitation = async (...args) => {
+      if (once) {
+        once = false;
+        if (change === 'leave') await s.api(`/rooms/${s.id}/leave`, 'away');
+        else if (change === 'demote') await accessFor(s, 'away', 'alerts');
+        else await s.api(`/rooms/${s.id}/revoke-member`, 'home', { uid: 'away' });
+      }
+      return issue(...args);
+    };
+    const result = await share(s, s.id);
+    assert.ok([403, 404].includes(result.status), change); assert.equal(result.body.secret, undefined);
+    assert.equal([...s.store.docs.values()].filter((doc) => doc.data.kind === 'away').length, 0);
+  }
+});
+
+test("renewal wins a race with stale redemption without granting membership", { timeout: 3000 }, async (t) => {
+  const s = await sharedHome(); const invitation = await share(s, s.id);
+  const entered = Promise.withResolvers(), release = Promise.withResolvers(); t.after(() => release.resolve());
+  const consume = s.store.consumeShareInvitation.bind(s.store); let once = true;
+  s.store.consumeShareInvitation = async (...args) => {
+    if (once) { once = false; entered.resolve(); await release.promise; }
+    return consume(...args);
+  };
+  const pending = s.join(s.id, invitation.body.secret, 'receiver'); await entered.promise;
+  const replacement = await share(s, s.id); assert.equal(replacement.status, 200);
+  release.resolve(); assert.equal((await pending).status, 403);
+  assert.equal((await s.store.get(`rooms/${s.id}`)).data.members.receiver, undefined);
+  assert.equal((await s.join(s.id, replacement.body.secret, 'receiver')).status, 200);
+});
+
+test("renewal retries a competing redemption and preserves its idempotent receipt", async () => {
+  const s = await sharedHome(); const invitation = await share(s, s.id);
+  const issue = s.store.putShareInvitation.bind(s.store); let once = true;
+  s.store.putShareInvitation = async (...args) => {
+    if (once) { once = false; assert.equal((await s.join(s.id, invitation.body.secret, 'receiver')).status, 200); }
+    return issue(...args);
+  };
+  const replacement = await share(s, s.id);
+  assert.equal(replacement.status, 200);
+  assert.equal((await s.join(s.id, invitation.body.secret, 'receiver')).status, 200);
+  assert.equal((await s.join(s.id, replacement.body.secret, 'another_receiver')).status, 200);
+});
+
+test("issuer nonce storage stays bounded to current members across repeated leave and rejoin", async () => {
+  const s = await sharedHome();
+  for (let i = 0; i < 10; i++) {
+    const uid = 'churn_' + i; await s.join(s.id, s.homeSecret, uid); await share(s, s.id, uid);
+    await s.api(`/rooms/${s.id}/leave`, uid);
+    const room = (await s.store.get(`rooms/${s.id}`)).data;
+    assert.deepEqual(Object.keys(room.shareInviteEpochs), ['away']);
+  }
+});
+
+test("shared invitation conflicts are bounded and never return an uncommitted secret", async () => {
+  const s = await sharedHome(); let attempts = 0;
+  s.store.putShareInvitation = async () => { attempts++; throw new HttpError(409, 'conflict'); };
+  const result = await share(s, s.id);
+  assert.equal(result.status, 409); assert.equal(result.body.secret, undefined); assert.equal(attempts, 5);
+});
+
+test("concurrent same-issuer renewals retain only the latest pending code", async () => {
+  const s = await sharedHome();
+  const results = await Promise.all([share(s, s.id), share(s, s.id)]);
+  assert.ok(results.every((result) => result.status === 200));
+  const invites = [...s.store.docs.values()].filter((doc) => doc.data.kind === 'away');
+  const indexes = [...s.store.docs.values()].filter((doc) => doc.data.kind === 'away-index');
+  assert.equal(invites.length, 1); assert.equal(indexes.length, 1);
+  const joins = await Promise.all(results.map((result, index) => s.join(s.id, result.body.secret, 'receiver_' + index)));
+  assert.deepEqual(joins.map((result) => result.status).sort(), [200, 403]);
+});
+
+test("an away invitation cannot grant membership to a different room", async () => {
+  const s = await sharedHome(); const invitation = await share(s, s.id);
+  const other = await s.api('/rooms', 'other_home'); const otherId = other.body.roomId;
+  const before = await s.store.get(`rooms/${otherId}`);
+  assert.equal((await s.join(otherId, invitation.body.secret, 'receiver')).status, 403);
+  assert.deepEqual(await s.store.get(`rooms/${otherId}`), before);
+  assert.equal((await s.join(s.id, invitation.body.secret, 'receiver')).status, 200);
 });
 
 test("with ANSWER_PEPPER the stored answer key is not the plain hash", async () => {

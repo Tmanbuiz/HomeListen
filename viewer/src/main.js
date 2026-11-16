@@ -9,11 +9,15 @@ import { createAlertRecordings, RECORDING_CHANNEL } from "./alert-recordings.js"
 import { memberAccess, canListen } from "./access.js";
 import { RoomRegistry, savePushRooms } from "./room-registry.js";
 import { MultiRoomSessions } from "./multi-room-sessions.js";
+import { roomSharingUI } from "./room-sharing-ui.js";
+import { MembershipQueue } from "./membership-queue.js";
 import { clearAll, dailyCounts, exportJson, filterEvents, loadAll, roomEvents, saveEvent } from "./history.js";
 
 const el = id => document.getElementById(id);
 let auth, db, config, registration, addingRoom = false, loggingOut = false;
-let roomId = null, historyAll = [], historyRows = [], pushTail = Promise.resolve(), leavesTail = Promise.resolve();
+let roomId = null, historyAll = [], historyRows = [], pushTail = Promise.resolve();
+let sharingUI, pairGeneration = 0;
+const memberships = new MembershipQueue();
 const registry = new RoomRegistry({
   getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value), removeItem: key => localStorage.removeItem(key)
 }, () => message("Rooms cannot be saved in this browser. Check storage permissions.", true));
@@ -38,6 +42,13 @@ const sessions = new MultiRoomSessions({ registry,
   onChanged: renderRooms,
   onInterrupted: () => recordings.interrupted(),
   onSelected: entry => { roomId = entry?.id ?? null; selectRecording(entry); void renderHistory(); }
+});
+sharingUI = roomSharingUI({
+  current: () => {
+    const entry = sessions.selected;
+    return entry ? { id: entry.id, name: registry.rooms.get(entry.id)?.name ?? 'Your room', room: entry.room,
+      uid: auth?.currentUser?.uid, origin: location.origin, supported: config?.features?.awayInvites === true && !loggingOut } : null;
+  }, api, pair, validPairing: value => parsePairing(value, location.origin), notice: message
 });
 function selectRecording(entry) {
   recordings.attachChannel(entry?.channel ?? null, { roomId: entry?.id, roomName: registry.rooms.get(entry?.id)?.name });
@@ -66,6 +77,7 @@ async function api(path, data = undefined, method = "POST") {
 }
 function sharing(room) { return room?.sharing === true && Date.now() - room.lastSeenMs < 120_000; }
 function renderRooms() {
+  sharingUI?.sync();
   const selected = sessions.selected, uid = auth?.currentUser?.uid;
   roomId = selected?.id ?? null;
   el("rooms-panel").hidden = registry.rooms.size === 0;
@@ -104,16 +116,15 @@ function syncPushAccess() {
   return pushTail;
 }
 function flushLeaves() {
-  leavesTail = leavesTail.then(() => registry.flushLeaves(async id => {
+  return memberships.flush(() => registry.flushLeaves(async id => {
     try { await api(`/rooms/${id}/leave`, {}); } catch (error) { if (error.status !== 404) throw error; }
   }));
-  return leavesTail;
 }
 async function removeRoom(id, { logout = false, reason = "Room access was removed. Pair again with a fresh link." } = {}) {
   const entry = sessions.entries.get(id); if (!entry) return;
   entry.unwatch?.(); entry.unwatch = null;
   await sessions.remove(id, { pendingLeave: logout }); await syncPushAccess();
-  if (logout) await flushLeaves();
+  if (logout) { message('This room is disconnected here. Finishing logout; other rooms stay connected.'); await flushLeaves(); }
   message(reason); event(reason);
 }
 function watchRoom(id) {
@@ -141,21 +152,40 @@ function browserName() {
   const browser = /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox" : /Safari\//.test(ua) ? "Safari" : "Browser";
   return browser + " on " + os;
 }
-async function addedRoom(id, data) {
-  registry.add(id, data?.roomName ?? registry.rooms.get(id)?.name ?? "Your room");
+async function addedRoom(id, data, { listen = true, select = true } = {}) {
+  const previous = registry.selected, existing = registry.rooms.has(id);
+  registry.add(id, data?.roomName ?? registry.rooms.get(id)?.name ?? "Your room", { select: false });
+  if (!listen && !existing) registry.update(id, { listen: false });
   sessions.ensure(id); addingRoom = false; watchRoom(id);
-  if (data) sessions.update(id, data);
-  await sessions.select(id); await syncPushAccess();
-  message("Room saved. Other rooms stay connected; only the selected room is audible.");
+  if (data && (select || !existing)) sessions.update(id, data, { reconcile: listen });
+  if (select || previous == null) await sessions.select(id, { play: select && listen });
+  await syncPushAccess();
+  message(listen ? "Room saved. Other rooms stay connected; only the selected room is audible." : 'Room saved. Live audio stays stopped until you connect it.');
 }
 async function pair(value) {
   if (loggingOut) return;
   const invite = parsePairing(value, location.origin);
   if (!invite) throw new Error("Use a Home Listen pairing link from this server.");
-  if (!auth.currentUser) await signInAnonymously(auth);
-  await flushLeaves();
-  const result = await api(`/rooms/${invite.roomId}/join`, { secret: invite.secret, label: browserName() });
-  el("pair-code").value = ""; await addedRoom(invite.roomId, result.room); event("Paired with another room");
+  const attempt = ++pairGeneration;
+  const ticket = memberships.begin();
+  try {
+    if (!auth.currentUser) await signInAnonymously(auth);
+    await flushLeaves();
+    if (memberships.cancelled(ticket, invite.roomId)) return;
+    let result;
+    try { result = await memberships.request(() => api(`/rooms/${invite.roomId}/join`, { secret: invite.secret, label: browserName() })); }
+    catch (error) {
+      if (memberships.cancelled(ticket, invite.roomId)) return;
+      if (error.code === 'already_paired' && registry.rooms.has(invite.roomId)) {
+        if (attempt === pairGeneration) await sessions.select(invite.roomId);
+        message('This room is already saved on this phone.'); return;
+      }
+      throw error;
+    }
+    if (memberships.cancelled(ticket, invite.roomId)) return;
+    const current = attempt === pairGeneration;
+    el("pair-code").value = ""; await addedRoom(invite.roomId, result.room, { listen: current, select: current }); event("Paired with another room");
+  } finally { memberships.finish(ticket); }
 }
 function signaling(id) {
   const path = sid => doc(db, "rooms", id, "sessions", sid), candidates = sid => collection(path(sid), "candidates");
@@ -194,7 +224,8 @@ async function toggleAlerts() {
 }
 async function logoutRoom() {
   const id = registry.selected; if (loggingOut || !id) return;
-  loggingOut = true; renderRooms();
+  memberships.logout(id);
+  pairGeneration++; loggingOut = true; renderRooms();
   try { await removeRoom(id, { logout: true, reason: "This device left the room. Other rooms and devices stay connected." }); }
   finally { loggingOut = false; renderRooms(); }
   // Anonymous Firebase identity remains shared by this device's other rooms.
@@ -207,9 +238,9 @@ el("pair-form").addEventListener("submit", async e => {
 });
 el("room-select").addEventListener("change", e => { void sessions.select(e.target.value); });
 el("add-room-button").addEventListener("click", () => { addingRoom = true; renderRooms(); el("pair-panel").scrollIntoView({ block: "start", behavior: "smooth" }); });
-el("cancel-pair-button").addEventListener("click", () => { addingRoom = false; renderRooms(); });
+el("cancel-pair-button").addEventListener("click", () => { pairGeneration++; addingRoom = false; renderRooms(); });
 el("listen-button").addEventListener("click", () => { void sessions.startAll().then(() => sessions.playSelected()); });
-el("stop-button").addEventListener("click", () => { void sessions.stopAll(); });
+el("stop-button").addEventListener("click", () => { pairGeneration++; void sessions.stopAll(); });
 el("play-button").addEventListener("click", () => { void sessions.playSelected(); });
 el("volume").addEventListener("input", e => sessions.setVolume(e.target.value));
 el("alerts-button").addEventListener("click", toggleAlerts);
@@ -261,14 +292,19 @@ async function joinWithCode() {
   if (loggingOut) return;
   const answer = el("answer").value.trim(), code = el("totp-code").value.replace(/\D/g, "");
   if (!answer || code.length !== 6 || el("code-button").disabled) return;
+  const attempt = ++pairGeneration;
+  const ticket = memberships.begin();
   el("code-button").disabled = true;
   try {
     if (!auth.currentUser) await signInAnonymously(auth);
     await flushLeaves();
-    const result = await api("/join-code", { answer, code, label: browserName() });
-    el("answer").value = ""; el("totp-code").value = ""; await addedRoom(result.roomId, result.room); event("Paired with another room");
+    if (ticket.left.size) return;
+    const result = await memberships.request(() => api("/join-code", { answer, code, label: browserName() }));
+    if (memberships.cancelled(ticket, result.roomId)) return;
+    const current = attempt === pairGeneration;
+    el("answer").value = ""; el("totp-code").value = ""; await addedRoom(result.roomId, result.room, { listen: current, select: current }); event("Paired with another room");
   } catch (error) { message(error.message, true); el("totp-code").value = ""; el("totp-code").focus(); }
-  finally { el("code-button").disabled = false; }
+  finally { memberships.finish(ticket); el("code-button").disabled = false; }
 }
 el("code-form").addEventListener("submit", e => { e.preventDefault(); void joinWithCode(); });
 el("totp-code").addEventListener("input", () => {

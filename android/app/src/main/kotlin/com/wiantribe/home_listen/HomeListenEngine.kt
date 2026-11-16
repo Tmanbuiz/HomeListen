@@ -86,6 +86,27 @@ object HomeListenEngine {
 
     private fun handle(context: Context, call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
+            "sharePairingLink" -> {
+                val screen = activity
+                val link = call.argument<String>("link") ?: ""
+                val room = call.argument<String>("room") ?: "this room"
+                val uri = Uri.parse(link)
+                val pairing = uri.fragment?.matches(Regex("pair=[A-Za-z0-9_-]{16,128}\\.[A-Za-z0-9_-]{43}")) == true
+                if (screen == null || screen.isFinishing || screen.isDestroyed ||
+                    link.length > 2048 || uri.scheme != "https" || uri.host.isNullOrBlank() ||
+                    !uri.userInfo.isNullOrBlank() || !pairing || room.length > 128) {
+                    result.error("share_unavailable", "Open Home Listen and create a current pairing code.", null)
+                } else try {
+                    val send = Intent(Intent.ACTION_SEND)
+                        .setType("text/plain")
+                        .putExtra(Intent.EXTRA_SUBJECT, "Home Listen · $room")
+                        .putExtra(Intent.EXTRA_TEXT, "Join $room on Home Listen:\n$link")
+                    screen.startActivity(Intent.createChooser(send, "Share pairing link"))
+                    result.success(true)
+                } catch (_: Exception) {
+                    result.error("share_unavailable", "Sharing is unavailable. Copy the link instead.", null)
+                }
+            }
             "recordingsDirectory" -> try {
                 result.success(recordingsDirectory(context).path)
             } catch (_: Exception) {
