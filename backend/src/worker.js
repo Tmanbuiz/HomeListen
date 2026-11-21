@@ -364,22 +364,39 @@ export function validateSubscription(subscription) {
   return { endpoint: url.href, keys: { p256dh: keys.p256dh, auth: keys.auth } };
 }
 
-export async function generateIceServers(env) {
+// A missing or failing relay must not block direct connections, which still
+// work on a shared network. The owner sees a warning in the Worker logs.
+export async function generateIceServers(env, {
+  request = (...args) => fetch(...args), warn = (message) => console.error(message)
+} = {}) {
   const servers = [{ urls: ["stun:stun.cloudflare.com:3478"] }];
   if (env.ALLOW_TURN !== "true") return servers;
-  if (!env.TURN_KEY_ID || !env.TURN_API_TOKEN) throw new HttpError(503, "The TURN relay has not been configured.");
+  if (!env.TURN_KEY_ID || !env.TURN_API_TOKEN) {
+    warn("TURN relay unavailable: set the TURN_KEY_ID and TURN_API_TOKEN secrets. Offering direct connections only.");
+    return servers;
+  }
   // Credentials outlive the two-hour session even without ICE renegotiation.
   const ttl = 7200;
-  const response = await fetch(
-    "https://rtc.live.cloudflare.com/v1/turn/keys/" + encodeURIComponent(env.TURN_KEY_ID) + "/credentials/generate-ice-servers",
-    {
-      method: "POST",
-      headers: { authorization: "Bearer " + env.TURN_API_TOKEN, "content-type": "application/json" },
-      body: JSON.stringify({ ttl })
-    }
-  );
-  const result = await response.json();
-  if (!response.ok || !result.iceServers) throw new HttpError(503, "The relay could not issue a connection credential.");
+  let response, result;
+  try {
+    response = await request(
+      "https://rtc.live.cloudflare.com/v1/turn/keys/" + encodeURIComponent(env.TURN_KEY_ID) + "/credentials/generate-ice-servers",
+      {
+        method: "POST",
+        headers: { authorization: "Bearer " + env.TURN_API_TOKEN, "content-type": "application/json" },
+        body: JSON.stringify({ ttl }),
+        signal: AbortSignal.timeout(5_000)
+      }
+    );
+    result = await response.json();
+  } catch (error) {
+    warn("TURN relay unavailable: the credential request failed (" + (error?.name ?? "Error") + "). Offering direct connections only.");
+    return servers;
+  }
+  if (!response.ok || !result?.iceServers) {
+    warn("TURN relay unavailable: Cloudflare answered HTTP " + response.status + ". Offering direct connections only.");
+    return servers;
+  }
   const returned = Array.isArray(result.iceServers) ? result.iceServers : [result.iceServers];
   for (const item of returned) {
     const urls = (Array.isArray(item.urls) ? item.urls : [item.urls]).filter((url) =>
@@ -462,7 +479,7 @@ export function createWorker(overrides = {}) {
         ok: true,
         configured: Boolean(env.FIREBASE_PROJECT_ID && env.FIREBASE_API_KEY &&
           env.FIREBASE_WEB_APP_ID && env.FIREBASE_ANDROID_APP_ID && env.FIREBASE_SERVICE_ACCOUNT),
-        version: "2.3.1"
+        version: "2.3.1 · update 2"
       });
     }
     if (request.method === "GET" && path === "/api/config") return json({

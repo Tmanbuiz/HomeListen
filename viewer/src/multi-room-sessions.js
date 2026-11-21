@@ -51,6 +51,8 @@ export class MultiRoomSessions {
     if (remember) this.registry.update(id, { listen: true });
     if (!this.registry.rooms.get(id)?.listen || this.suspended || !this.allowed(entry.room) || entry.session || (!remember && entry.retry)) return;
     clearTimeout(entry.retry); entry.retry = null; entry.problem = null;
+    // A user's Connect is a fresh try: short backoff and a plain "Connecting".
+    if (remember) entry.attempts = 0;
     const generation = ++entry.generation;
     const session = this.createSession(id, {
       onPeer: (pc) => { if (this.current(entry, session)) { entry.pc = pc; this.onPeer(entry, pc); } },

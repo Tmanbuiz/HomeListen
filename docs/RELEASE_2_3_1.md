@@ -33,3 +33,14 @@ This feature is for Cloud rooms. Existing Tailscale pairing remains unchanged. N
 Validate role/expiry/replay boundaries, issuer and receiver membership changes, concurrent redemption/capacity, renewal and cleanup races, stale UI responses, camera cancellation, correct QR decoding and uninterrupted room peers. Firestore rules are unchanged: invitations remain private and server-managed. No rules migration or new paid service is required.
 
 Automated builds do not prove physical QR scanning, iPad share-sheet behavior, push delivery or locked-screen/background reliability. Test those on real devices before treating them as verified.
+
+## Web and API update 2 — reliable away listening
+
+Web **2.3.1 · update 2**; API **2.3.1 · update 2**; native apps unchanged at **2.3.1+22**. Deployment status must be verified separately.
+
+- `ALLOW_TURN` is `true` in `backend/wrangler.jsonc`, so deploys, including Workers Builds after a merge, keep the relay on instead of replacing a dashboard-only setting. The relay still needs the `TURN_KEY_ID` and `TURN_API_TOKEN` Worker secrets; `/api/config` reports `"turnEnabled":true` only when all three are present.
+- If the secrets are missing, or Cloudflare cannot issue a relay credential within five seconds, the Worker logs a warning without the token and offers direct (STUN) connections instead of refusing every listener. Phones on the same network still connect; away audio may then time out.
+- The web listener no longer shows "Connecting to this room…" indefinitely. The whole handshake, signaling writes included, times out after 35 seconds. The room then says it cannot reach the home phone, retries with backoff and shows "Still can’t reach the home phone. Trying again…". **Connect room audio** during the wait retries at once with a fresh backoff. A muted room that has not connected no longer says "Connected".
+- Native Android and iPhone listeners are unchanged.
+
+Automated checks do not prove relay traversal on real mobile networks or restrictive Wi-Fi. Test listening from mobile data or another network after deploying.
