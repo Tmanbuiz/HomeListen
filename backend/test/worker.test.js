@@ -733,7 +733,7 @@ async function accessFor(s, uid, role, expiresAtMs) {
 test("away invitation capability and API version are discoverable", async () => {
   const s = setup();
   assert.equal((await s.api('/config', null, {}, 'GET')).body.features.awayInvites, true);
-  assert.equal((await s.api('/health', null, {}, 'GET')).body.version, '2.3.1');
+  assert.equal((await s.api('/health', null, {}, 'GET')).body.version, '2.3.1 · update 2');
 });
 
 test("a permanent caregiver shares the selected offline or Guardian room without starting capture", async () => {

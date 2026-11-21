@@ -5,6 +5,7 @@ import { getFirestore, doc, collection, onSnapshot, updateDoc, addDoc, Timestamp
 import { parsePairing } from "./pairing.js";
 import { recoveringWatch } from "./recovering-watch.js";
 import { AudioSession } from "./audio-session.js";
+import { audioStatus, connectionLabel } from "./audio-status.js";
 import { createAlertRecordings, RECORDING_CHANNEL } from "./alert-recordings.js";
 import { memberAccess, canListen } from "./access.js";
 import { RoomRegistry, savePushRooms } from "./room-registry.js";
@@ -91,7 +92,7 @@ function renderRooms() {
   }));
   el("room-connections").replaceChildren(...[...sessions.entries.values()].map(entry => {
     const item = document.createElement("li");
-    const state = entry.session ? entry.state === "connected" ? "Connected" : "Connecting" : entry.state === "reconnecting" ? "Reconnecting" : !entry.room ? "Checking access" : !sharing(entry.room) ? "Monitoring off" : !canListen(entry.room, uid) ? "Live audio unavailable" : "Audio paused";
+    const state = entry.session ? connectionLabel(entry) : entry.state === "reconnecting" ? "Reconnecting" : !entry.room ? "Checking access" : !sharing(entry.room) ? "Monitoring off" : !canListen(entry.room, uid) ? "Live audio unavailable" : "Audio paused";
     item.textContent = `${registry.rooms.get(entry.id)?.name ?? "Room"} · ${state}${entry.id === registry.selected ? " · selected" : " · muted"}`; return item;
   }));
   el("listen-button").disabled = loggingOut || ![...sessions.entries.values()].some(entry => canListen(entry.room, uid) && !entry.session);
@@ -102,7 +103,7 @@ function renderRooms() {
   el("room-name").textContent = registry.rooms.get(selected.id)?.name ?? "Your room";
   el("sharing-status").textContent = !room ? "Checking access…" : !live ? "Monitoring off" : room.audioAvailable === false ? "Guardian on · live audio off" : "Sharing on";
   el("sharing-status").classList.toggle("live", live);
-  el("audio-status").textContent = selected.problem ?? (selected.blocked || (selected.session && !sessions.audible) ? "Connected · tap to hear this room." : selected.state === "connected" ? "You’re listening to this room." : selected.session ? "Connecting to this room…" : "Ready when you are.");
+  el("audio-status").textContent = audioStatus(selected, sessions.audible);
   document.querySelector(".sound-orb").classList.toggle("playing", selected.state === "connected" && sessions.audible && !selected.blocked);
   el("play-button").hidden = !selected.session || (sessions.audible && !selected.blocked);
   el("battery").textContent = "Home battery: " + (live && room.battery != null ? room.battery + "%" + (room.charging ? " · charging" : "") : "—");

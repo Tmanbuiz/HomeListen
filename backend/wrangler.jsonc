@@ -23,6 +23,9 @@
     "VAPID_PUBLIC_KEY": "BMNHcsPZ07q2dj5lHSoIy0azYWbNeoypBEcxo1fhObuG13LQGMO51cKGMsiGf_IZaA_159Fpr3wInZbc-KwKllA",
     "VAPID_SUBJECT": "https://github.com/Tmanbuiz/HomeListen",
     "PUBLIC_ORIGIN": "https://homelisten.oralyvo.app",
-    "ALLOW_TURN": "false",
+    // On: away phones need the relay across mobile data and strict Wi-Fi.
+    // TURN_KEY_ID and TURN_API_TOKEN are Worker secrets, never in this file.
+    // Without them the Worker logs a warning and offers direct connections.
+    "ALLOW_TURN": "true",
   }
 }

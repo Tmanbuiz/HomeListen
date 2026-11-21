@@ -48,7 +48,7 @@ Fill public values in **backend/wrangler.jsonc**:
 | VAPID_PUBLIC_KEY | Public push key generated below |
 | VAPID_SUBJECT | Your contact mailto: address or valid HTTPS URL |
 | PUBLIC_ORIGIN | Actual Worker HTTPS origin after deployment |
-| ALLOW_TURN | false initially |
+| ALLOW_TURN | true (already set in wrangler.jsonc); add the TURN secrets below |
 
 From backend, generate the Web Push keys:
 
@@ -75,9 +75,9 @@ Open **/api/health**: configured should be true. The root page should show the p
 
 For local development, place values in ignored **backend/.dev.vars**, with the service-account JSON as a single quoted string. Build viewer, then run npm run dev from backend.
 
-## Optional TURN relay
+## TURN relay
 
-Direct STUN connections cannot traverse every network. Configure TURN when both phones are online and sharing is on but audio times out, or choose Tailscale.
+Direct STUN connections cannot traverse every network, so away phones on mobile data or restrictive Wi-Fi need the relay. ALLOW_TURN is true in wrangler.jsonc; the relay works once the two secrets below exist. Until then, or if Cloudflare cannot issue a relay credential, the Worker logs a warning and offers direct connections only: phones on the same network still connect, but away audio can time out. Tailscale mode is the alternative.
 
 1. Review [Realtime pricing](https://developers.cloudflare.com/realtime/sfu/platform/pricing/) and account billing. TURN and SFU share the first 1,000 GB/month; additional egress is $0.05/GB.
 2. Create a TURN key in Cloudflare Realtime. Save its key ID and associated TURN key API token.
@@ -88,7 +88,7 @@ npx wrangler secret put TURN_KEY_ID
 npx wrangler secret put TURN_API_TOKEN
 ~~~
 
-4. Set ALLOW_TURN to true and deploy.
+4. Deploy. Keep ALLOW_TURN true in wrangler.jsonc: every deploy, including Workers Builds after a merge, replaces variables set only in the dashboard. Secrets are kept. Check that https://your-origin/api/config shows "turnEnabled":true.
 
 Paired authenticated phones receive two-hour credentials only while the home is sharing. Credentials refresh during sessions; the master key stays on the Worker. Monitor usage: there is no automated billing cap in this app.
 

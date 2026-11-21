@@ -1,4 +1,6 @@
 // One receive-only peer. This module never calls getUserMedia.
+// Messages describe what happened; the room list retries on its own.
+export const UNREACHABLE = "Can’t reach the home phone from here. Check that it’s online and still sharing.";
 export class AudioSession {
   constructor({ api, roomId, firestore, rtc = (config) => new RTCPeerConnection(config),
     onTrack, onState, onError, onPeer, now = () => Date.now() }) {
@@ -19,6 +21,9 @@ export class AudioSession {
     // Add receiver-only optional data channels before the offer is created.
     this.onPeer?.(pc);
     const fail = (error) => { if (!this.closed) this.onError(error); };
+    // Bound the whole handshake, signaling writes included, so a stalled
+    // attempt is reported and retried instead of connecting forever.
+    this.timeout = setTimeout(() => fail(new Error(UNREACHABLE)), 35_000);
     pc.ontrack = (event) => {
       if (!this.closed) this.onTrack(event.streams[0] ?? new MediaStream([event.track]));
     };
@@ -30,9 +35,9 @@ export class AudioSession {
         this.disconnectTimeout = undefined;
       }
       if (pc.connectionState === "disconnected" && !this.disconnectTimeout) {
-        this.disconnectTimeout = setTimeout(() => fail(new Error("Audio connection lost. Tap Listen live to reconnect.")), 12_000);
+        this.disconnectTimeout = setTimeout(() => fail(new Error("Audio connection lost.")), 12_000);
       }
-      if (pc.connectionState === "failed") fail(new Error("Audio connection lost. Tap Listen live to reconnect."));
+      if (pc.connectionState === "failed") fail(new Error("Audio connection lost."));
     };
     pc.onicecandidate = (event) => {
       if (this.closed || !event.candidate) return;
@@ -73,13 +78,12 @@ export class AudioSession {
     if (this.closed) return;
     await this.firestore.setOffer(session.sessionId, offer.sdp);
     if (this.closed) return;
-    if (pc.connectionState !== "connected") this.timeout = setTimeout(() => fail(new Error("The home phone did not connect. Check sharing and the relay setup.")), 35_000);
     const originalState = pc.onconnectionstatechange;
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === "connected") clearTimeout(this.timeout);
       originalState();
     };
-    this.expiry = setTimeout(() => fail(new Error("This listening session expired. Tap Listen live to start another.")),
+    this.expiry = setTimeout(() => fail(new Error("This listening session expired.")),
       Math.max(0, Date.parse(session.expiresAt) - this.now()));
     this.refresh = setInterval(async () => {
       try {

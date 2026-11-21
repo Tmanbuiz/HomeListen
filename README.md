@@ -41,7 +41,7 @@ Personal use can fit these current free quotas. Relay usage has an optional paid
 
 The home phone sends one heartbeat per minute while sharing: approximately 1,440 writes per 24 hours. Open apps read status changes. Signaling, security-rule reads, reconnects, alerts and cleanup add usage. Monitor Firebase and Cloudflare dashboards; this does not promise unlimited free service.
 
-**TURN is off by default.** Direct audio can fail across mobile networks or restrictive Wi-Fi. Review relay billing before enabling it, or choose Tailscale mode.
+**TURN is on in wrangler.jsonc and needs a Cloudflare TURN key** (see SETUP.md, TURN relay). Without the key, or if the relay fails, phones fall back to direct audio, which can fail across mobile networks or restrictive Wi-Fi. Review relay billing, or choose Tailscale mode.
 
 No Cloud Functions, Cloud Run, hosted classifier or paid Firestore TTL is required. Worker cron cleanup uses ordinary deletes.
 
